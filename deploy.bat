@@ -3,7 +3,10 @@ setlocal
 cd /d "%~dp0"
 chcp 65001 >nul
 set "APP=.\src-tauri\target\release\rollport.exe"
-echo [1/2] Building Rollport...
+echo [1/3] Closing any running Rollport process...
+taskkill /IM rollport.exe /T /F >nul 2>&1
+timeout /t 1 /nobreak >nul
+echo [2/3] Building Rollport...
 call pnpm tauri build
 set "BUILD_EXIT=%errorlevel%"
 if not "%BUILD_EXIT%"=="0" (
@@ -16,7 +19,7 @@ if not exist "%APP%" (
     pause
     exit /b 1
 )
-echo [2/2] Launching Rollport...
+echo [3/3] Launching Rollport...
 start "" /D "." "%APP%"
 if errorlevel 1 (
     echo Rollport could not be launched.
