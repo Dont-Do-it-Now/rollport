@@ -27,10 +27,10 @@
 </p>
 
 <div align="center">
-  <picture style="display: inline-block; vertical-align: top;">
+  <picture style="display: inline-block; vertical-align: middle;">
     <source media="(prefers-color-scheme: dark)" srcset="docs/rollport-dark.webp">
-    <img style="vertical-align: top;" src="docs/rollport.webp" width="62%" alt="The Rollport window showing an import in progress and completed results">
-  </picture><img style="vertical-align: top;" src="docs/rollport-options.webp" width="36%" alt="Rollport options showing media type and metadata controls">
+    <img style="vertical-align: middle;" src="docs/rollport.webp" width="62%" alt="The Rollport window showing an import in progress and completed results">
+  </picture><img style="vertical-align: middle;" src="docs/rollport-options.webp" width="36%" alt="Rollport options showing media type and metadata controls">
 </div>
 
 ## Features

@@ -27,10 +27,10 @@
 </p>
 
 <div align="center">
-  <picture style="display: inline-block; vertical-align: top;">
+  <picture style="display: inline-block; vertical-align: middle;">
     <source media="(prefers-color-scheme: dark)" srcset="docs/rollport-dark.webp">
-    <img style="vertical-align: top;" src="docs/rollport.webp" width="62%" alt="가져오기 진행과 완료 결과를 보여 주는 Rollport 화면">
-  </picture><img style="vertical-align: top;" src="docs/rollport-options.webp" width="36%" alt="미디어 유형과 메타데이터 옵션을 보여 주는 Rollport 화면">
+    <img style="vertical-align: middle;" src="docs/rollport.webp" width="62%" alt="가져오기 진행과 완료 결과를 보여 주는 Rollport 화면">
+  </picture><img style="vertical-align: middle;" src="docs/rollport-options.webp" width="36%" alt="미디어 유형과 메타데이터 옵션을 보여 주는 Rollport 화면">
 </div>
 
 ## 주요 기능
