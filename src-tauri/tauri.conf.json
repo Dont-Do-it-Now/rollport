@@ -27,9 +27,7 @@
     },
     "bundle": {
         "active": true,
-        "resources": [
-            "resources/exiftool"
-        ],
+        "resources": ["resources/exiftool"],
         "targets": "all",
         "icon": [
             "icons/32x32.png",

@@ -59,6 +59,17 @@ const read = (fresh: number, bytes?: number): Roll => ({
     all: batch(fresh + 100),
     new: batch(fresh, bytes),
     metadata: batch(0),
+    kinds: batch(fresh + 100).kinds,
+    newKinds: batch(fresh, bytes).kinds,
+    support: {
+        database: false,
+        portrait: false,
+        panorama: false,
+        burst: false,
+        screenshots: false,
+        slowMotion: false,
+        portraitOriginal: false,
+    },
 })
 const reading = (failed: string | null = null): Roll => ({
     roll: "reading",

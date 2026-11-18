@@ -158,6 +158,8 @@
     let continueNoticeTimer: ReturnType<typeof setTimeout> | undefined
 
     function continueImport() {
+        if (view.screen !== "done") return
+
         if (view.next === "later") {
             continueNotice = "Connect the iPhone again to continue."
             if (continueNoticeTimer) clearTimeout(continueNoticeTimer)

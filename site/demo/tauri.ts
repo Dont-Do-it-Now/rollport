@@ -82,8 +82,44 @@ function demo() {
         bytes: 15.8e9,
         videos: 190,
         clips: 0,
+        kinds: {
+            standard: 4332,
+            live: 0,
+            liveVideos: 0,
+            portrait: 0,
+            portraitOriginal: 0,
+            panorama: 0,
+            burst: 0,
+            burstAll: 0,
+            screenshots: 0,
+            videos: 190,
+            slowMotion: 0,
+        },
         newest: ["sunset", "lake", "city"].map(photo),
     }
+
+    const SUPPORT = {
+        database: false,
+        portrait: false,
+        panorama: false,
+        burst: false,
+        screenshots: false,
+        slowMotion: false,
+        portraitOriginal: false,
+    } as const
+    const METADATA = {
+        location: "fillMissing",
+        camera: "fillMissing",
+        title: "fillMissing",
+    } as const
+    const emptyBatch = (): Batch => ({
+        files: 0,
+        bytes: 0,
+        videos: 0,
+        clips: 0,
+        newest: [],
+        kinds: { ...ALL.kinds, standard: 0, videos: 0 },
+    })
 
     /** What is new for a range and a choice of kinds (Takes in state.rs). */
     function wanted(range: Range, takes: Takes): Batch {
@@ -100,6 +136,7 @@ function demo() {
             bytes: (BYTES * files) / TOTAL,
             videos,
             clips: 0,
+            kinds: { ...ALL.kinds, standard: photos, videos },
             newest:
                 files === 0
                     ? []
@@ -146,11 +183,16 @@ function demo() {
             layout: "{mtime:%Y-%m-%d_%H-%M-%S}_{name}",
             naming: "2026-09-02_15-04-11_IMG_0001.HEIC",
             takes: "everything",
+            metadata: METADATA,
         },
         roll: {
             roll: "done",
             all: ALL,
             new: wanted({ range: "everything" }, "everything"),
+            metadata: emptyBatch(),
+            kinds: ALL.kinds,
+            newKinds: ALL.kinds,
+            support: SUPPORT,
         },
         run: null,
         range: { range: "everything" },
@@ -217,10 +259,19 @@ function demo() {
         return {
             ...flow,
             // As Rust: the folder now holds what landed, so less is new.
-            roll: { roll: "done", all: ALL, new: left(batch, imported) },
+            roll: {
+                roll: "done",
+                all: ALL,
+                new: left(batch, imported),
+                metadata: emptyBatch(),
+                kinds: ALL.kinds,
+                newKinds: left(batch, imported).kinds,
+                support: SUPPORT,
+            },
             run: {
                 run: "finished",
                 imported,
+                updated: 0,
                 bytes: (batch.bytes * imported) / Math.max(batch.files, 1),
                 seconds: Math.round(
                     (batch.bytes * imported) / Math.max(batch.files, 1) / RATE,
@@ -314,7 +365,15 @@ function demo() {
             flow = { ...ready, range: flow.range, folder: withSettings(ready) }
             publish({
                 ...flow,
-                roll: { roll: "done", all: ALL, new: current() },
+                roll: {
+                    roll: "done",
+                    all: ALL,
+                    new: current(),
+                    metadata: emptyBatch(),
+                    kinds: ALL.kinds,
+                    newKinds: current().kinds,
+                    support: SUPPORT,
+                },
             })
         })
     }

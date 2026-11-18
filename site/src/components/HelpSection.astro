@@ -52,7 +52,11 @@ const title = sectionTitle(id)
         {(image || screen) && (
             <figure class="mt-6 flex justify-center rounded-xl bg-subtle px-6 py-8">
                 {image ? (
-                    <img class="h-auto w-full max-w-xs" src={image} alt={alt ?? title} />
+                    <img
+                        class="h-auto w-full max-w-xs"
+                        src={image}
+                        alt={alt ?? title}
+                    />
                 ) : (
                     <Window
                         class="w-full max-w-shot"

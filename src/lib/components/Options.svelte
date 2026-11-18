@@ -363,13 +363,20 @@
                             type="checkbox"
                             checked={selection[kind.key]}
                             disabled={unavailable(kind) ||
-                                (kind.parent !== undefined && !selection[kind.parent])}
+                                (kind.parent !== undefined &&
+                                    !selection[kind.parent])}
                             onchange={(event) =>
-                                setOption(kind.key, event.currentTarget.checked)}
+                                setOption(
+                                    kind.key,
+                                    event.currentTarget.checked,
+                                )}
                             class="h-4 w-4 accent-ink"
                         />
-                        <span class="min-w-0 flex-1 truncate">{kind.label}</span>
-                        <span class="tabular-nums text-muted">{counts[kind.count]}</span>
+                        <span class="min-w-0 flex-1 truncate">{kind.label}</span
+                        >
+                        <span class="text-muted tabular-nums"
+                            >{counts[kind.count]}</span
+                        >
                     </label>
                 {/each}
                 {#if !support.database}
@@ -405,20 +412,23 @@
                     <Menu
                         value={folder.metadata[kind.key]}
                         items={METADATA_MODES}
-                        onchoose={(value) => setMetadata(kind.key, value as MetadataMode)}
+                        onchoose={(value) =>
+                            setMetadata(kind.key, value as MetadataMode)}
                         label={kind.label}
                         class={trigger}
                     >
                         <span class="text-muted">{kind.label}</span>
                         {@render answer(
                             METADATA_MODES.find(
-                                (mode) => mode.value === folder.metadata[kind.key],
+                                (mode) =>
+                                    mode.value === folder.metadata[kind.key],
                             )?.label ?? "",
                         )}
                     </Menu>
                 {/each}
                 <p class="px-4 pt-2 pb-1 text-xs text-muted">
-                    Existing file metadata is never deleted. Missing values are filled from the iPhone library.
+                    Existing file metadata is never deleted. Missing values are
+                    filled from the iPhone library.
                 </p>
             </div>
         {/if}
@@ -442,69 +452,69 @@
     </button>
 
     <div>
-            <Menu
-                value={own ? OWN : folder.layout}
-                items={NAMES}
-                onchoose={pickLayout}
-                label="File names, saved with this folder"
-                title="Saved with this folder."
-                class={trigger}
-            >
-                <span class="text-muted" aria-hidden="true">File names</span>
-                {@render answer(
-                    own ? "A pattern of your own" : (preset?.name ?? ""),
-                )}
-            </Menu>
+        <Menu
+            value={own ? OWN : folder.layout}
+            items={NAMES}
+            onchoose={pickLayout}
+            label="File names, saved with this folder"
+            title="Saved with this folder."
+            class={trigger}
+        >
+            <span class="text-muted" aria-hidden="true">File names</span>
+            {@render answer(
+                own ? "A pattern of your own" : (preset?.name ?? ""),
+            )}
+        </Menu>
 
-            {#if own}
-                <!-- The field is positioned, so its focus ring paints over the
+        {#if own}
+            <!-- The field is positioned, so its focus ring paints over the
                      highlighted row above it, which is positioned too. -->
-                <div class="px-4 pb-3">
-                    <input
-                        bind:this={field}
-                        type="text"
-                        spellcheck="false"
-                        autocapitalize="off"
-                        autocorrect="off"
-                        value={folder.layout}
-                        aria-label="Naming pattern"
-                        aria-invalid={trouble ? "true" : undefined}
-                        aria-describedby="{id}-help"
-                        oninput={() => (trouble = "")}
-                        onchange={(event) => commit(event.currentTarget.value)}
-                        class="{input} relative w-full font-mono text-xs"
-                    />
-                    <p
-                        id="{id}-help"
-                        class="mt-2 text-xs text-pretty {trouble
-                            ? 'text-tomato-11'
-                            : 'text-muted'}"
-                    >
-                        {#if trouble}
-                            <!-- Its tokens set as code, as in the hint. -->
-                            {#each trouble.split(/(\{[^}]*\})/) as part, index (index)}
-                                {#if part.startsWith("{")}
-                                    <span class="font-mono whitespace-nowrap"
-                                        >{part}</span
-                                    >
-                                {:else}
-                                    {part}
-                                {/if}
-                            {/each}
-                        {:else}
-                            <!-- A token never breaks at its hyphens. -->
-                            <span class="font-mono whitespace-nowrap"
-                                >{"{name}"}</span
-                            >
-                            is the iPhone’s name for the file,
-                            <span class="font-mono whitespace-nowrap"
-                                >{"{mtime:%Y-%m-%d}"}</span
-                            >
-                            is the date it was taken, and
-                            <span class="font-mono">/</span> makes a folder.
-                        {/if}
-                    </p>
-                </div>
-            {/if}
-        </div>
+            <div class="px-4 pb-3">
+                <input
+                    bind:this={field}
+                    type="text"
+                    spellcheck="false"
+                    autocapitalize="off"
+                    autocorrect="off"
+                    value={folder.layout}
+                    aria-label="Naming pattern"
+                    aria-invalid={trouble ? "true" : undefined}
+                    aria-describedby="{id}-help"
+                    oninput={() => (trouble = "")}
+                    onchange={(event) => commit(event.currentTarget.value)}
+                    class="{input} relative w-full font-mono text-xs"
+                />
+                <p
+                    id="{id}-help"
+                    class="mt-2 text-xs text-pretty {trouble
+                        ? 'text-tomato-11'
+                        : 'text-muted'}"
+                >
+                    {#if trouble}
+                        <!-- Its tokens set as code, as in the hint. -->
+                        {#each trouble.split(/(\{[^}]*\})/) as part, index (index)}
+                            {#if part.startsWith("{")}
+                                <span class="font-mono whitespace-nowrap"
+                                    >{part}</span
+                                >
+                            {:else}
+                                {part}
+                            {/if}
+                        {/each}
+                    {:else}
+                        <!-- A token never breaks at its hyphens. -->
+                        <span class="font-mono whitespace-nowrap"
+                            >{"{name}"}</span
+                        >
+                        is the iPhone’s name for the file,
+                        <span class="font-mono whitespace-nowrap"
+                            >{"{mtime:%Y-%m-%d}"}</span
+                        >
+                        is the date it was taken, and
+                        <span class="font-mono">/</span> makes a folder.
+                    {/if}
+                </p>
+            </div>
+        {/if}
+    </div>
 </div>

@@ -470,7 +470,13 @@ impl Library {
         let stored = settings.takes.stored();
         self.set("takes", &stored)?;
 
-        self.set("layout", &settings.layout)?;
+        let frozen: bool = self
+            .0
+            .query_row("SELECT EXISTS(SELECT 1 FROM media)", [], |row| row.get(0))
+            .doing("cannot read rollport-library.db")?;
+        if !frozen {
+            self.set("layout", &settings.layout)?;
+        }
 
         self.set(
             "metadata",

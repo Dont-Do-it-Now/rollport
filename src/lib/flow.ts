@@ -109,8 +109,8 @@ export type Folder =
           naming: string
           /// What it takes in. One answer, because "photos only, but bring the
           /// Live Photo videos" cannot mean anything.
-           takes: Takes
-           metadata: MetadataSettings
+          takes: Takes
+          metadata: MetadataSettings
       }
 
 /// Files to import, and what they are. A Live Photo's clip is neither a photo
@@ -180,11 +180,7 @@ export type MetadataSettings = {
 }
 
 export type LegacyTakes =
-    | "everything"
-    | "noLiveVideos"
-    | "photos"
-    | "videos"
-    | "noScreenshots"
+    "everything" | "noLiveVideos" | "photos" | "videos" | "noScreenshots"
 export type Takes = LegacyTakes | { selection: MediaSelection }
 
 /// The facts Rust holds, side by side. What to show is worked out from them
@@ -753,7 +749,8 @@ function report(
     // A locked phone answers, but not with its files.
     const unreadable = roll?.roll === "reading" && roll.failed !== null
     // After a run that copied nothing, the Import button says it all.
-    const goOn = imported > 0 || updated > 0 ? "Continue imports what is left." : ""
+    const goOn =
+        imported > 0 || updated > 0 ? "Continue imports what is left." : ""
     // A run that did not do all of it goes on once its phone can be read.
     const unfinished = run.end !== "done" || trouble !== null
     const cost = imported > 0 ? `${size(bytes)} in ${elapsed(seconds)}. ` : ""
@@ -910,7 +907,9 @@ function report(
                 imported > 0 || updated > 0
                     ? [
                           imported > 0 ? `Imported ${count(imported)}` : "",
-                          updated > 0 ? `updated metadata for ${count(updated)}` : "",
+                          updated > 0
+                              ? `updated metadata for ${count(updated)}`
+                              : "",
                       ]
                           .filter(Boolean)
                           .join(", ")
@@ -928,7 +927,9 @@ function report(
             ? {
                   title: [
                       imported > 0 ? `Imported ${count(imported)}` : "",
-                      updated > 0 ? `Updated metadata for ${count(updated)}` : "",
+                      updated > 0
+                          ? `Updated metadata for ${count(updated)}`
+                          : "",
                   ]
                       .filter(Boolean)
                       .join(", "),

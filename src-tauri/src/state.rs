@@ -1673,6 +1673,7 @@ mod tests {
                 kinds: MediaCounts {
                     standard: 3,
                     live_videos: 1,
+                    videos: 1,
                     ..MediaCounts::default()
                 },
                 // The clip is newest of all, and is not a print.
@@ -1823,11 +1824,17 @@ mod tests {
 
         open(&mut state, folder(HashSet::new()));
 
-        let file = |path: &str, live_video: bool| Media {
+        let file = |path: &str, live_video: bool, second| Media {
             path: path.into(),
             size: 1,
-            mtime: when("2026-09-02 15:04:11"),
-            still: live_video.then(|| when("2026-09-02 15:04:11")),
+            mtime: chrono::DateTime::from_timestamp(second, 0)
+                .unwrap()
+                .naive_utc(),
+            still: live_video.then(|| {
+                chrono::DateTime::from_timestamp(second, 0)
+                    .unwrap()
+                    .naive_utc()
+            }),
             classification: MediaClassification::default(),
             metadata: MediaMetadata::default(),
         };
@@ -1836,11 +1843,11 @@ mod tests {
         read(
             &mut state,
             vec![
-                file("/DCIM/100APPLE/IMG_0001.HEIC", false),
-                file("/DCIM/100APPLE/IMG_0001.MOV", true),
-                file("/DCIM/100APPLE/IMG_0002.MOV", false),
-                file("/DCIM/100APPLE/IMG_0003.HEIC", false),
-                file("/DCIM/100APPLE/IMG_0004.PNG", false),
+                file("/DCIM/100APPLE/IMG_0001.HEIC", false, 1),
+                file("/DCIM/100APPLE/IMG_0001.MOV", true, 5),
+                file("/DCIM/100APPLE/IMG_0002.MOV", false, 4),
+                file("/DCIM/100APPLE/IMG_0003.HEIC", false, 3),
+                file("/DCIM/100APPLE/IMG_0004.PNG", false, 2),
             ],
         );
 
@@ -2141,7 +2148,9 @@ mod tests {
         read(&mut state, vec![file.clone()]);
         assert!(state.start_import().is_none());
 
-        open(&mut state, folder(HashSet::from([key(&file)])));
+        let mut facts = folder(HashSet::from([key(&file)]));
+        facts.metadata_keys.insert(key(&file));
+        open(&mut state, facts);
         assert!(state.start_import().is_none());
 
         state.reread(Path::new("/tmp/x"), Ok(folder(HashSet::new())));
