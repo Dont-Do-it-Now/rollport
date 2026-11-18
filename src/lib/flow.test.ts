@@ -39,12 +39,26 @@ const batch = (files: number, bytes = files * 1e6): Batch => ({
     bytes,
     videos: 0,
     clips: 0,
+    kinds: {
+        standard: 0,
+        live: 0,
+        liveVideos: 0,
+        portrait: 0,
+        portraitOriginal: 0,
+        panorama: 0,
+        burst: 0,
+        burstAll: 0,
+        screenshots: 0,
+        videos: 0,
+        slowMotion: 0,
+    },
     newest: [],
 })
 const read = (fresh: number, bytes?: number): Roll => ({
     roll: "done",
     all: batch(fresh + 100),
     new: batch(fresh, bytes),
+    metadata: batch(0),
 })
 const reading = (failed: string | null = null): Roll => ({
     roll: "reading",
@@ -63,6 +77,11 @@ const known: Extract<Flow["folder"], { folder: "known" }> = {
     layout: "{name}",
     naming: "IMG_0001.HEIC",
     takes: "everything",
+    metadata: {
+        location: "fillMissing",
+        camera: "fillMissing",
+        title: "fillMissing",
+    },
 }
 
 const flow = (changes: Partial<Flow> = {}): Flow => ({
@@ -77,6 +96,7 @@ const finished = (changes: Partial<Report> = {}): Flow["run"] =>
     ({
         run: "finished",
         imported: 140,
+        updated: 0,
         bytes: 998e6,
         seconds: 94,
         trouble: null,

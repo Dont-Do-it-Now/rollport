@@ -40,6 +40,12 @@ export type Roll =
           all: Batch
           /// Those of them the folder has never taken.
           new: Batch
+          /// Existing files whose metadata has not been enriched yet.
+          metadata: Batch
+          /// Counts before the media checkboxes are applied.
+          kinds: MediaCounts
+          newKinds: MediaCounts
+          support: MediaSupport
       }
 
 /// What could not be copied. One bad file does not end a run.
@@ -48,6 +54,7 @@ export type Trouble = { failed: number; name: string; reason: string }
 /// What a run did, and how it ended.
 export type Report = {
     imported: number
+    updated: number
     /// What was actually fetched, and how long it took to fetch it.
     bytes: number
     seconds: number
@@ -102,7 +109,8 @@ export type Folder =
           naming: string
           /// What it takes in. One answer, because "photos only, but bring the
           /// Live Photo videos" cannot mean anything.
-          takes: Takes
+           takes: Takes
+           metadata: MetadataSettings
       }
 
 /// Files to import, and what they are. A Live Photo's clip is neither a photo
@@ -115,6 +123,7 @@ export type Batch = {
     /// The newest few, by path on the phone, newest first. Never a Live
     /// Photo's clip.
     newest: string[]
+    kinds: MediaCounts
 }
 
 /// How far back this run reaches. `last` keeps counting from today; `between`
@@ -124,7 +133,59 @@ export type Range =
     | { range: "last"; days: number }
     | { range: "between"; from: string; to: string }
 
-export type Takes = "everything" | "noLiveVideos" | "photos" | "videos"
+export type MediaSelection = {
+    standard: boolean
+    live: boolean
+    liveVideos: boolean
+    portrait: boolean
+    portraitOriginal: boolean
+    panorama: boolean
+    burst: boolean
+    burstAll: boolean
+    screenshots: boolean
+    videos: boolean
+    slowMotion: boolean
+}
+
+export type MediaCounts = {
+    standard: number
+    live: number
+    liveVideos: number
+    portrait: number
+    portraitOriginal: number
+    panorama: number
+    burst: number
+    burstAll: number
+    screenshots: number
+    videos: number
+    slowMotion: number
+}
+
+export type MediaSupport = {
+    database: boolean
+    portrait: boolean
+    panorama: boolean
+    burst: boolean
+    screenshots: boolean
+    slowMotion: boolean
+    portraitOriginal: boolean
+}
+
+export type MetadataMode = "preserve" | "fillMissing"
+
+export type MetadataSettings = {
+    location: MetadataMode
+    camera: MetadataMode
+    title: MetadataMode
+}
+
+export type LegacyTakes =
+    | "everything"
+    | "noLiveVideos"
+    | "photos"
+    | "videos"
+    | "noScreenshots"
+export type Takes = LegacyTakes | { selection: MediaSelection }
 
 /// The facts Rust holds, side by side. What to show is worked out from them
 /// in `screen`.
@@ -183,6 +244,7 @@ export type Screen =
           files: number
           bytes: number
           details: string
+          metadataOnly: boolean
           /// Worth saying before Import, but not worth refusing over. Short:
           /// the run will stop when the disk is too full; a note is advice.
           warning: { tone: "short" | "note"; text: string } | null
@@ -224,17 +286,59 @@ export const PRESETS: { range: Range; label: string }[] = [
 /// What a folder takes in, as the window says it. A Live Photo's .mov is part
 /// of a picture rather than a film of its own, so only the first of these
 /// brings them along.
-export const TAKES: Record<Takes, string> = {
+export const TAKES: Record<LegacyTakes, string> = {
     everything: "All media",
     noLiveVideos: "No Live Photo videos",
     photos: "Photos only",
     videos: "Videos only",
+    noScreenshots: "No screenshots",
+}
+
+export function selectionOf(takes: Takes): MediaSelection {
+    if (typeof takes !== "string") return takes.selection
+
+    const all: MediaSelection = {
+        standard: true,
+        live: true,
+        liveVideos: true,
+        portrait: true,
+        portraitOriginal: true,
+        panorama: true,
+        burst: true,
+        burstAll: true,
+        screenshots: true,
+        videos: true,
+        slowMotion: true,
+    }
+    if (takes === "noLiveVideos") all.liveVideos = false
+    if (takes === "photos") {
+        all.liveVideos = false
+        all.videos = false
+        all.slowMotion = false
+    }
+    if (takes === "videos") {
+        all.standard = false
+        all.live = false
+        all.portrait = false
+        all.panorama = false
+        all.burst = false
+        all.screenshots = false
+        all.videos = true
+        all.slowMotion = true
+        all.liveVideos = false
+    }
+    if (takes === "noScreenshots") all.screenshots = false
+    if (takes === "everything") return all
+    return all
 }
 
 /// The footer's summary of the Options: "Any date, all media". The media types
 /// lowercase their first letter, after the date.
 export function summary(range: Range, takes: Takes) {
-    const what = TAKES[takes]
+    const what =
+        typeof takes === "string"
+            ? TAKES[takes as LegacyTakes]
+            : "Selected media"
     return `${when(range)}, ${what.charAt(0).toLowerCase()}${what.slice(1)}`
 }
 
@@ -262,6 +366,11 @@ export const LAYOUTS = [
         layout: "{mtime:%Y}/{mtime:%m}/{name}",
         name: "Year and month folders",
         example: "2026/09/IMG_0001.HEIC",
+    },
+    {
+        layout: "{mtime:%Y}/{name}",
+        name: "Year folder",
+        example: "2026/IMG_0001.HEIC",
     },
     {
         layout: "{name}",
@@ -553,7 +662,7 @@ export function screen(flow: Flow): Screen {
     if (roll?.roll !== "done")
         return { screen: "counting", count: count(roll?.seen ?? 0) }
 
-    if (roll.new.files === 0) {
+    if (roll.new.files === 0 && roll.metadata.files === 0) {
         const last = folder.lastImport
 
         return {
@@ -564,13 +673,22 @@ export function screen(flow: Flow): Screen {
 
     // "312 / 4.1 GB to import": what the button will do, in its own word,
     // and what it weighs. A full disk is said first: it will stop the run.
+    const metadataOnly = roll.new.files === 0
+    const files = roll.new.files + roll.metadata.files
+    const bytes = roll.new.bytes + roll.metadata.bytes
+
     return {
         screen: "ready",
-        files: roll.new.files,
-        bytes: roll.new.bytes,
-        details: kinds(roll.new),
+        files,
+        bytes,
+        metadataOnly,
+        details: metadataOnly
+            ? `${count(roll.metadata.files)} existing files will be updated`
+            : roll.metadata.files > 0
+              ? `${kinds(roll.new)}, ${count(roll.metadata.files)} existing files will be updated`
+              : kinds(roll.new),
         warning:
-            roll.new.bytes > folder.free
+            !metadataOnly && roll.new.bytes > folder.free
                 ? {
                       tone: "short",
                       text: `Free up ${size(roll.new.bytes - folder.free)}, or choose fewer dates or media types in Options.`,
@@ -628,14 +746,14 @@ function report(
     roll: Roll | null,
     free: number,
 ): Extract<Screen, { screen: "done" }> {
-    const { imported, trouble, bytes, seconds } = run
+    const { imported, updated, trouble, bytes, seconds } = run
     const left = roll?.roll === "done" ? roll.new.files : null
     const chosen = source.source === "listed" ? source.chosen : null
     const ready = chosen?.state === "ready"
     // A locked phone answers, but not with its files.
     const unreadable = roll?.roll === "reading" && roll.failed !== null
     // After a run that copied nothing, the Import button says it all.
-    const goOn = imported > 0 ? "Continue imports what is left." : ""
+    const goOn = imported > 0 || updated > 0 ? "Continue imports what is left." : ""
     // A run that did not do all of it goes on once its phone can be read.
     const unfinished = run.end !== "done" || trouble !== null
     const cost = imported > 0 ? `${size(bytes)} in ${elapsed(seconds)}. ` : ""
@@ -712,8 +830,8 @@ function report(
         return {
             title: "Import failed",
             detail:
-                imported > 0
-                    ? "Everything imported before it failed is still in the folder."
+                imported > 0 || updated > 0
+                    ? "Everything processed before it failed is still in the folder."
                     : "Nothing was copied.",
             reason: run.reason,
             badge: "trouble",
@@ -789,8 +907,13 @@ function report(
 
         return {
             title:
-                imported > 0
-                    ? `Imported ${count(imported)}`
+                imported > 0 || updated > 0
+                    ? [
+                          imported > 0 ? `Imported ${count(imported)}` : "",
+                          updated > 0 ? `updated metadata for ${count(updated)}` : "",
+                      ]
+                          .filter(Boolean)
+                          .join(", ")
                     : "Nothing could be imported",
             detail: `${cost}${which}`,
             reason,
@@ -801,9 +924,14 @@ function report(
     }
 
     return {
-        ...(imported > 0
+        ...(imported > 0 || updated > 0
             ? {
-                  title: `Imported ${count(imported)}`,
+                  title: [
+                      imported > 0 ? `Imported ${count(imported)}` : "",
+                      updated > 0 ? `Updated metadata for ${count(updated)}` : "",
+                  ]
+                      .filter(Boolean)
+                      .join(", "),
                   detail: `${cost}Nothing was deleted from the iPhone.`,
               }
             : {

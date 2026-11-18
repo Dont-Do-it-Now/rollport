@@ -1,8 +1,12 @@
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     Context,
-    state::{FolderFacts, Media, Range, Settings, Takes, default_layout, local},
+    state::{FolderFacts, Media, Range, Settings, Takes, default_layout, local, render},
 };
 
 /// Identity is where it lived on the phone, its size, and the whole second it
@@ -40,6 +44,7 @@ pub fn read_folder(path: &Path) -> Result<FolderFacts, String> {
 
     let plain = FolderFacts {
         keys: HashSet::new(),
+        metadata_keys: HashSet::new(),
         last: None,
         free: room(path),
         network: on_network(path),
@@ -54,13 +59,17 @@ pub fn read_folder(path: &Path) -> Result<FolderFacts, String> {
 
     let (keys, last) = keys(path)?;
     let library = Library::open(path)?;
+    let metadata_keys = library.metadata_keys()?;
 
     Ok(FolderFacts {
         keys,
+        metadata_keys,
         last,
         settings: Settings {
             layout: library.setting("layout")?.unwrap_or_else(default_layout),
             takes: Takes::read(&library.setting("takes")?.unwrap_or_default()),
+            metadata: serde_json::from_str(&library.setting("metadata")?.unwrap_or_default())
+                .unwrap_or_default(),
         },
         ..plain
     })
@@ -79,16 +88,47 @@ fn keys(folder: &Path) -> Result<(HashSet<Key>, Option<i64>), String> {
     let library = Library::open(folder)?;
 
     // CAST floors the CLI's float to the second, as `key` does.
-    let keys = library
+    let layout = library.setting("layout")?.unwrap_or_else(default_layout);
+    let stored = library
         .0
         .prepare("SELECT afc_path, st_size, CAST(st_mtime AS INTEGER) FROM media")
         .and_then(|mut sql| {
             sql.query_map([], |row| {
                 Ok((row.get(0)?, row.get::<_, i64>(1)? as u64, row.get(2)?))
             })?
-            .collect::<Result<HashSet<Key>, _>>()
+            .collect::<Result<Vec<Key>, _>>()
         })
         .doing("cannot read rollport-library.db")?;
+    let targets = stored
+        .into_iter()
+        .filter_map(|key| target_for(folder, &layout, &key).map(|target| (key, target)))
+        .collect::<Vec<_>>();
+    let mut parents = HashSet::new();
+    let mut expected = HashMap::<PathBuf, HashSet<(String, Option<String>)>>::new();
+    for (_, target) in &targets {
+        let Some(parent) = target.parent().map(Path::to_path_buf) else {
+            continue;
+        };
+        let Some(stem) = target
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_lowercase)
+        else {
+            continue;
+        };
+        let extension = target
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_lowercase);
+        parents.insert(parent.clone());
+        expected.entry(parent).or_default().insert((stem, extension));
+    }
+    let physical = local_files(&parents, &expected)?;
+    let keys = targets
+        .into_iter()
+        .filter(|(_, target)| landed(&physical, target))
+        .map(|(key, _)| key)
+        .collect::<HashSet<_>>();
 
     // The CLI's schema stamps every row with the moment it was recorded, so
     // the folder already knows when it last took anything.
@@ -105,6 +145,126 @@ fn keys(folder: &Path) -> Result<(HashSet<Key>, Option<i64>), String> {
         .map(|when| when.and_utc().timestamp());
 
     Ok((keys, last))
+}
+
+/// A database row is useful only while its local destination still exists.
+/// Metadata enrichment may change the byte count, so the name produced by the
+/// saved layout is the stable check here.
+fn target_for(folder: &Path, layout: &str, key: &Key) -> Option<PathBuf> {
+    let (source, _, mtime) = key;
+    let Some(when) = chrono::DateTime::from_timestamp(*mtime, 0).map(|date| date.naive_utc())
+    else {
+        return None;
+    };
+    let name = source.rsplit('/').next().unwrap_or(source);
+    Some(folder.join(render(layout, name, local(when))))
+}
+
+struct LocalFile {
+    stem: String,
+    extension: Option<String>,
+}
+
+fn local_files(
+    parents: &HashSet<PathBuf>,
+    expected: &HashMap<PathBuf, HashSet<(String, Option<String>)>>,
+) -> Result<HashMap<PathBuf, Vec<LocalFile>>, String> {
+    let mut files = HashMap::new();
+
+    for parent in parents {
+        let entries = match fs::read_dir(parent) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                files.insert(parent.clone(), Vec::new());
+                continue;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect destination folder {}: {error}",
+                    parent.display()
+                ));
+            }
+        };
+
+        let mut local = Vec::new();
+        for entry in entries {
+            let entry = entry.doing("cannot inspect destination folder")?;
+            let Some(stem) = entry
+                .path()
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_lowercase)
+            else {
+                continue;
+            };
+            let extension = entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(str::to_lowercase);
+            let relevant = expected
+                .get(parent)
+                .is_some_and(|targets| expected_file(targets, &stem, &extension));
+            if !relevant {
+                continue;
+            }
+            local.push(LocalFile { stem, extension });
+        }
+        files.insert(parent.clone(), local);
+    }
+
+    Ok(files)
+}
+
+fn expected_file(
+    targets: &HashSet<(String, Option<String>)>,
+    stem: &str,
+    extension: &Option<String>,
+) -> bool {
+    if targets.contains(&(stem.to_string(), extension.clone())) {
+        return true;
+    }
+
+    let Some((base, suffix)) = stem.rsplit_once('_') else {
+        return false;
+    };
+    suffix.chars().all(|c| c.is_ascii_digit())
+        && targets.contains(&(base.to_string(), extension.clone()))
+}
+
+fn matches_stem(candidate: &str, expected: &str) -> bool {
+    candidate == expected
+        || candidate
+            .strip_prefix(&format!("{expected}_"))
+            .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn landed(
+    physical: &HashMap<PathBuf, Vec<LocalFile>>,
+    target: &Path,
+) -> bool {
+    let Some(parent) = target.parent() else {
+        return false;
+    };
+    let Some(files) = physical.get(parent) else {
+        return false;
+    };
+    let Some(stem) = target
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::to_lowercase)
+    else {
+        return false;
+    };
+    let extension = target
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_lowercase);
+
+    files.iter().any(|file| {
+        matches_stem(&file.stem, &stem)
+            && file.extension == extension
+    })
 }
 
 /// The files of this camera roll the folder takes and has never taken.
@@ -278,21 +438,13 @@ impl Library {
             .doing("cannot record the import")
     }
 
-    /// An error is not a zero: zero is what unfreezes the naming.
-    pub fn imported(&self) -> Result<usize, String> {
-        self.0
-            .query_row("SELECT count(*) FROM media", [], |row| row.get::<_, i64>(0))
-            .map(|count| count as usize)
-            .doing("cannot read rollport-library.db")
-    }
-
     /// One of the folder's own answers about importing, or None where it has
     /// never been asked. Opening a folder to see what it says is not the same
     /// as answering for it: the first import writes both answers down, and
     /// until then the folder is somebody else's to read.
     ///
     /// Only a missing row is "never asked". A read that fails is not the
-    /// default, or a frozen layout would name new files another way.
+    /// default. A read that fails is not the default.
     pub fn setting(&self, key: &str) -> Result<Option<String>, String> {
         use rusqlite::OptionalExtension;
 
@@ -314,16 +466,43 @@ impl Library {
             .doing("cannot write to rollport-library.db")
     }
 
-    /// Write the folder's settings down. The layout only while no file has been
-    /// named with it: the count is asked here, not of keys that may be old.
+    /// Write the folder's settings down.
     pub fn write_settings(&self, settings: &Settings) -> Result<(), String> {
-        self.set("takes", settings.takes.stored())?;
+        let stored = settings.takes.stored();
+        self.set("takes", &stored)?;
 
-        if self.imported()? == 0 {
-            self.set("layout", &settings.layout)?;
-        }
+        self.set("layout", &settings.layout)?;
+
+        self.set(
+            "metadata",
+            &serde_json::to_string(&settings.metadata)
+                .map_err(|error| format!("cannot encode metadata settings: {error}"))?,
+        )?;
 
         Ok(())
+    }
+
+    pub fn metadata_keys(&self) -> Result<HashSet<Key>, String> {
+        match self.setting("metadata_keys")? {
+            None => Ok(HashSet::new()),
+            Some(value) if value == "1" => Ok(HashSet::new()),
+            Some(value) => serde_json::from_str(&value)
+                .map_err(|error| format!("cannot decode metadata progress: {error}")),
+        }
+    }
+
+    pub fn mark_metadata_migrated(&self, keys: &[Key]) -> Result<(), String> {
+        let mut migrated = self.metadata_keys()?;
+        migrated.extend(keys.iter().cloned());
+        self.set(
+            "metadata_keys",
+            &serde_json::to_string(&migrated)
+                .map_err(|error| format!("cannot encode metadata progress: {error}"))?,
+        )
+    }
+
+    pub fn clear_metadata_progress(&self) -> Result<(), String> {
+        self.set("metadata_keys", "[]")
     }
 }
 
@@ -346,6 +525,8 @@ mod tests {
                 .unwrap()
                 .naive_utc(),
             still: None,
+            classification: MediaClassification::default(),
+            metadata: Default::default(),
         }
     }
 
@@ -355,6 +536,18 @@ mod tests {
     fn a_row_the_cli_wrote_is_the_same_file() {
         let dir = folder("db");
         let file = file("/DCIM/100APPLE/IMG_0001.HEIC");
+        let target = dir.join(render(
+            &default_layout(),
+            "IMG_0001.HEIC",
+            local(file.mtime),
+        ));
+        std::fs::write(&target, vec![0; file.size as usize]).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&target)
+            .unwrap()
+            .set_modified(std::time::SystemTime::from(file.mtime.and_utc()))
+            .unwrap();
 
         let library = Library::create(&dir).unwrap();
         library
@@ -493,6 +686,7 @@ mod tests {
         let first = Settings {
             layout: "{mtime:%Y}/{name}".into(),
             takes: Takes::Photos,
+            metadata: Default::default(),
         };
 
         library.write_settings(&first).unwrap();
@@ -503,6 +697,7 @@ mod tests {
             .write_settings(&Settings {
                 layout: default_layout(),
                 takes: Takes::Videos,
+                metadata: Default::default(),
             })
             .unwrap();
 

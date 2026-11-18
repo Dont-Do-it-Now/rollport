@@ -109,6 +109,29 @@
     /// Options is open. How the window looks, so it is this screen's to keep.
     let options = $state(false)
 
+    const EMPTY_COUNTS = {
+        standard: 0,
+        live: 0,
+        liveVideos: 0,
+        portrait: 0,
+        portraitOriginal: 0,
+        panorama: 0,
+        burst: 0,
+        burstAll: 0,
+        screenshots: 0,
+        videos: 0,
+        slowMotion: 0,
+    }
+    const EMPTY_SUPPORT = {
+        database: false,
+        portrait: false,
+        panorama: false,
+        burst: false,
+        screenshots: false,
+        slowMotion: false,
+        portraitOriginal: false,
+    }
+
     /// The button that opens Options. Closed with Esc or a click outside, the
     /// popover takes the focus with it; it comes back here, not to the top.
     let opener = $state<HTMLButtonElement>()
@@ -613,7 +636,7 @@
                 {#if view.screen === "ready"}
                     <p class={hero}>{count(Math.round(files.current))}</p>
                     <p class="mt-2 text-lg font-medium">
-                        {size(bytes.current)} to import
+                        {size(bytes.current)} {view.metadataOnly ? "to update" : "to import"}
                     </p>
                     {#key view.details}
                         <p
@@ -637,7 +660,7 @@
                             strokeWidth={2}
                             aria-hidden="true"
                         />
-                        Import {count(view.files)}
+                        {view.metadataOnly ? "Update metadata" : `Import ${count(view.files)}`}
                     </Button>
                 {:else if view.screen === "counting"}
                     <p class="{hero} text-muted">{view.count}</p>
@@ -692,35 +715,47 @@
                             >Troubleshooting</HelpLink
                         >
                     {/if}
-                    <div class="mt-6 flex items-center gap-2">
+                    <div class="mt-6 flex w-full flex-col items-stretch gap-2">
+                        <div class="flex items-center gap-2">
+                            {#if view.next === "continue" || view.next === "later"}
+                                <Button
+                                    variant="main"
+                                    onclick={start}
+                                    disabled={view.next === "later"}
+                                    class="disabled:opacity-50"
+                                    title={`${again ? "Import again" : "Import what is left"} (${shownEnter})`}
+                                    aria-keyshortcuts={enter}
+                                >
+                                    <ArrowDownToLine
+                                        size={14}
+                                        strokeWidth={2}
+                                        aria-hidden="true"
+                                    />
+                                    {again ? "Import" : "Continue"}
+                                </Button>
+                            {:else if view.next === "rescan"}
+                                <Button
+                                    variant="main"
+                                    onclick={() => tell("rescan")}
+                                    title={`Check the camera roll again (${shownEnter})`}
+                                    aria-keyshortcuts={enter}
+                                >
+                                    <RotateCw size={14} aria-hidden="true" />
+                                    Check again
+                                </Button>
+                            {/if}
+                            {@render reveal()}
+                        </div>
                         {#if view.next === "continue" || view.next === "later"}
                             <Button
-                                variant="main"
-                                onclick={start}
-                                disabled={view.next === "later"}
-                                class="disabled:opacity-50"
-                                title={`${again ? "Import again" : "Import what is left"} (${shownEnter})`}
-                                aria-keyshortcuts={enter}
+                                variant="secondary"
+                                onclick={() => tell("dismiss_import")}
+                                title="Cancel and go back"
+                                class="w-full justify-center"
                             >
-                                <ArrowDownToLine
-                                    size={14}
-                                    strokeWidth={2}
-                                    aria-hidden="true"
-                                />
-                                {again ? "Import" : "Continue"}
-                            </Button>
-                        {:else if view.next === "rescan"}
-                            <Button
-                                variant="main"
-                                onclick={() => tell("rescan")}
-                                title={`Check the camera roll again (${shownEnter})`}
-                                aria-keyshortcuts={enter}
-                            >
-                                <RotateCw size={14} aria-hidden="true" />
-                                Check again
+                                Cancel
                             </Button>
                         {/if}
-                        {@render reveal()}
                     </div>
                 {:else}
                     <p class={heading}>Up to date</p>
@@ -841,6 +876,11 @@
         transition:fly={{ y: 8, duration: still ? 0 : 150 }}
         class="fixed right-3 bottom-14 left-3 z-50 max-h-[calc(100vh-var(--spacing)*17)] overflow-y-auto rounded-xl border border-line bg-canvas shadow-xl"
     >
-        <Options {folder} range={flow.range} />
+        <Options
+            {folder}
+            range={flow.range}
+            counts={flow.roll?.roll === "done" ? flow.roll.kinds : EMPTY_COUNTS}
+            support={flow.roll?.roll === "done" ? flow.roll.support : EMPTY_SUPPORT}
+        />
     </div>
 {/if}

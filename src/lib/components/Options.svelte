@@ -2,18 +2,22 @@
     import { tick } from "svelte"
     import { invoke } from "@tauri-apps/api/core"
     import ChevronDown from "@lucide/svelte/icons/chevron-down"
-    import Lock from "@lucide/svelte/icons/lock"
+    import FolderOpen from "@lucide/svelte/icons/folder-open"
     import Menu from "$lib/components/Menu.svelte"
     import {
         LAYOUTS,
         PRESETS,
-        TAKES,
         keyOf,
+        selectionOf,
         tell,
         when,
         type Folder,
+        type MediaCounts,
+        type MediaSelection,
+        type MediaSupport,
+        type MetadataMode,
+        type MetadataSettings,
         type Range,
-        type Takes,
     } from "$lib/flow"
 
     // What the popover under Options holds: which dates this run takes, and
@@ -23,9 +27,13 @@
     let {
         folder,
         range,
+        counts,
+        support,
     }: {
         folder: Extract<Folder, { folder: "known" }>
         range: Range
+        counts: MediaCounts
+        support: MediaSupport
     } = $props()
 
     const onrange = (range: Range) => tell("set_range", { range })
@@ -147,17 +155,105 @@
         { value: "between", label: "Between two dates" },
     ]
 
-    // What a choice leaves in or out, where its name alone does not say.
-    const KIND_DETAILS: Partial<Record<Takes, string>> = {
-        everything: "Photos, videos and Live Photo videos",
-        noLiveVideos: "The short clip with each Live Photo is left out",
+    const selection = $derived(selectionOf(folder.takes))
+    let mediaOpen = $state(false)
+    let metadataOpen = $state(false)
+    type OptionKey = keyof MediaSelection
+
+    function setOption(key: OptionKey, value: boolean) {
+        tell("set_media_options", {
+            options: { ...selection, [key]: value },
+        })
     }
 
-    const KINDS = Object.entries(TAKES).map(([value, label]) => ({
-        value,
-        label,
-        detail: KIND_DETAILS[value as Takes],
-    }))
+    const kinds: {
+        key: OptionKey
+        label: string
+        count: keyof MediaCounts
+        support?: keyof MediaSupport
+        child?: boolean
+        parent?: OptionKey
+    }[] = [
+        { key: "standard", label: "Standard photos", count: "standard" },
+        { key: "live", label: "Live Photos", count: "live" },
+        {
+            key: "liveVideos",
+            label: "Include video files",
+            count: "liveVideos",
+            child: true,
+            parent: "live",
+        },
+        {
+            key: "portrait",
+            label: "Portrait photos",
+            count: "portrait",
+            support: "portrait",
+        },
+        {
+            key: "portraitOriginal",
+            label: "Include originals before portrait effect",
+            count: "portraitOriginal",
+            support: "portraitOriginal",
+            child: true,
+            parent: "portrait",
+        },
+        {
+            key: "panorama",
+            label: "Panoramas",
+            count: "panorama",
+            support: "panorama",
+        },
+        {
+            key: "burst",
+            label: "Bursts",
+            count: "burst",
+            support: "burst",
+        },
+        {
+            key: "burstAll",
+            label: "Include all frames",
+            count: "burstAll",
+            support: "burst",
+            child: true,
+            parent: "burst",
+        },
+        {
+            key: "screenshots",
+            label: "Screenshots",
+            count: "screenshots",
+            support: "screenshots",
+        },
+        { key: "videos", label: "Videos", count: "videos" },
+        {
+            key: "slowMotion",
+            label: "Slow motion",
+            count: "slowMotion",
+            support: "slowMotion",
+        },
+    ]
+
+    const unavailable = (kind: { support?: keyof MediaSupport }) =>
+        kind.support !== undefined && !support[kind.support]
+
+    const METADATA_MODES: { value: MetadataMode; label: string }[] = [
+        { value: "fillMissing", label: "Fill missing (recommended)" },
+        { value: "preserve", label: "Keep existing" },
+    ]
+
+    const metadataKinds: {
+        key: keyof MetadataSettings
+        label: string
+    }[] = [
+        { key: "location", label: "Location" },
+        { key: "camera", label: "Camera and lens" },
+        { key: "title", label: "Title and description" },
+    ]
+
+    function setMetadata(key: keyof MetadataSettings, value: MetadataMode) {
+        tell("set_metadata_options", {
+            metadata: { ...folder.metadata, [key]: value },
+        })
+    }
 
     const NAMES = [
         ...LAYOUTS.map((option) => ({
@@ -227,54 +323,131 @@
         {/if}
     </div>
 
-    <Menu
-        value={folder.takes}
-        items={KINDS}
-        onchoose={(value) => tell("set_takes", { takes: value as Takes })}
-        label="Media types, saved with this folder"
-        title="Saved with this folder."
-        class={trigger}
-    >
-        <span class="text-muted" aria-hidden="true">Media types</span>
-        {@render answer(TAKES[folder.takes])}
-    </Menu>
-
-    <!-- The naming stopped being a question when the folder named its first
-         file. It is a thing that happened, not a control that was turned off. -->
-    {#if folder.frozen}
-        <div
-            class={row}
-            title="Set at the first import and cannot change now, so every file here is named the same way."
+    <div>
+        <button
+            type="button"
+            class={trigger}
+            aria-expanded={mediaOpen}
+            aria-controls="{id}-media-types"
+            onclick={() => (mediaOpen = !mediaOpen)}
         >
-            <span class="text-muted">File names</span>
-            <span class="ml-auto flex min-w-0 items-center gap-2">
-                <!-- A pattern of its own has no name, so it shows itself. -->
-                {#if preset}
-                    <span class="truncate font-medium">{preset.name}</span>
-                {:else}
-                    <span class="truncate font-mono text-xs select-text"
-                        >{folder.layout}</span
-                    >
-                {/if}
-                <Lock
+            <span class="text-muted">Photo types</span>
+            <span class="ml-auto flex items-center gap-2 font-medium">
+                <span>{mediaOpen ? "Hide" : "Choose"}</span>
+                <ChevronDown
                     size={12}
-                    class="shrink-0 text-muted"
+                    class={mediaOpen ? "rotate-180" : ""}
                     aria-hidden="true"
                 />
-                <span class="sr-only"
-                    >, locked: set at the first import, so every file here is
-                    named the same way</span
-                >
             </span>
-        </div>
-    {:else}
-        <div>
+        </button>
+
+        {#if mediaOpen}
+            <div
+                id="{id}-media-types"
+                class="divide-y divide-line py-2"
+                aria-label="Media types"
+            >
+                {#each kinds as kind (kind.key)}
+                    <label
+                        class="flex min-h-9 items-center gap-3 px-4 text-sm {kind.child
+                            ? 'pl-10 text-muted'
+                            : ''} {unavailable(kind)
+                            ? 'opacity-50'
+                            : 'cursor-pointer'}"
+                        title={unavailable(kind)
+                            ? "Photo type information is unavailable on this iPhone"
+                            : undefined}
+                    >
+                        <input
+                            type="checkbox"
+                            checked={selection[kind.key]}
+                            disabled={unavailable(kind) ||
+                                (kind.parent !== undefined && !selection[kind.parent])}
+                            onchange={(event) =>
+                                setOption(kind.key, event.currentTarget.checked)}
+                            class="h-4 w-4 accent-ink"
+                        />
+                        <span class="min-w-0 flex-1 truncate">{kind.label}</span>
+                        <span class="tabular-nums text-muted">{counts[kind.count]}</span>
+                    </label>
+                {/each}
+                {#if !support.database}
+                    <p class="px-4 pt-2 pb-1 text-xs text-muted">
+                        This iPhone does not expose photo type information.
+                    </p>
+                {/if}
+            </div>
+        {/if}
+    </div>
+
+    <div>
+        <button
+            type="button"
+            class={trigger}
+            aria-expanded={metadataOpen}
+            aria-controls="{id}-metadata"
+            onclick={() => (metadataOpen = !metadataOpen)}
+        >
+            <span class="text-muted">Metadata</span>
+            <span class="ml-auto flex items-center gap-2 font-medium">
+                <span>{metadataOpen ? "Hide" : "Choose"}</span>
+                <ChevronDown
+                    size={12}
+                    class={metadataOpen ? "rotate-180" : ""}
+                    aria-hidden="true"
+                />
+            </span>
+        </button>
+        {#if metadataOpen}
+            <div id="{id}-metadata" class="divide-y divide-line py-2">
+                {#each metadataKinds as kind (kind.key)}
+                    <Menu
+                        value={folder.metadata[kind.key]}
+                        items={METADATA_MODES}
+                        onchoose={(value) => setMetadata(kind.key, value as MetadataMode)}
+                        label={kind.label}
+                        class={trigger}
+                    >
+                        <span class="text-muted">{kind.label}</span>
+                        {@render answer(
+                            METADATA_MODES.find(
+                                (mode) => mode.value === folder.metadata[kind.key],
+                            )?.label ?? "",
+                        )}
+                    </Menu>
+                {/each}
+                <p class="px-4 pt-2 pb-1 text-xs text-muted">
+                    Existing file metadata is never deleted. Missing values are filled from the iPhone library.
+                </p>
+            </div>
+        {/if}
+    </div>
+
+    <button
+        type="button"
+        class={`${row} w-full text-left transition-colors hover:bg-subtle focus-visible:bg-subtle`}
+        onclick={() => tell("choose_destination")}
+        title={`${folder.path}\nChoose another folder`}
+    >
+        <span class="text-muted">Destination folder</span>
+        <span class="ml-auto flex min-w-0 items-center gap-2 font-medium">
+            <span class="truncate">{folder.path}</span>
+            <FolderOpen
+                size={14}
+                class="shrink-0 text-muted"
+                aria-hidden="true"
+            />
+        </span>
+    </button>
+
+    <div>
             <Menu
                 value={own ? OWN : folder.layout}
                 items={NAMES}
                 onchoose={pickLayout}
                 label="File names, saved with this folder"
-                title="Saved with this folder. Set for good at the first import."
+                title="Saved with this folder."
                 class={trigger}
             >
                 <span class="text-muted" aria-hidden="true">File names</span>
@@ -334,5 +507,4 @@
                 </div>
             {/if}
         </div>
-    {/if}
 </div>

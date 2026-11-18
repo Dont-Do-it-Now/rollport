@@ -1,0 +1,12 @@
+Rollport includes ExifTool 13.64 as a separate bundled utility.
+
+ExifTool is Copyright (c) Phil Harvey and contributors. It is distributed
+under the same terms as Perl: the GNU General Public License or the Perl
+Artistic License. The original license materials are included in the
+exiftool_files directory.
+
+Project: https://exiftool.org/
+Source and downloads: https://sourceforge.net/projects/exiftool/
+
+Rollport's own source code remains separately licensed under MIT. This notice
+does not relicense ExifTool or its bundled third-party components.

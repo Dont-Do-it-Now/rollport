@@ -1,8 +1,11 @@
 use std::{
+    collections::HashMap,
     fs,
     future::Future,
+    io::{BufRead, BufReader, Write},
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -18,7 +21,7 @@ use idevice::{
     provider::IdeviceProvider,
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice, UsbmuxdListenEvent},
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::{
     io::AsyncWriteExt,
     sync::mpsc::UnboundedSender,
@@ -28,10 +31,11 @@ use tokio_stream::StreamExt;
 
 use crate::{
     Context, follow,
-    library::{Library, room},
+    library::{Key, Library, key, room},
     said,
     state::{
-        Batch, Device, Devices, End, Media, Need, Progress, Report, Settings, Trouble, check_name,
+        Batch, Device, Devices, End, Media, MediaClassification, MediaSupport, Need, Progress,
+        MediaMetadata, MetadataMode, MetadataSettings, Report, Settings, Trouble, check_name,
         local, render,
     },
     with,
@@ -41,8 +45,8 @@ use crate::{
 /// or brought in from elsewhere (GIFs, screenshots, a camera's RAW files from
 /// an SD card reader). The CLI took fewer and skipped the rest without a
 /// word. Not .aae: an edit's recipe, which only Photos can read.
-pub const MEDIA: [&str; 20] = [
-    "heic", "heif", "jpg", "jpeg", "png", "dng", "mov", "mp4", "m4v", "gif", "tif", "tiff", "webp",
+pub const MEDIA: [&str; 21] = [
+    "heic", "heif", "jpg", "jpeg", "png", "bmp", "dng", "mov", "mp4", "m4v", "gif", "tif", "tiff", "webp",
     "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2",
 ];
 
@@ -105,23 +109,67 @@ pub async fn thumbnail(udid: &str, path: &str) -> Result<Vec<u8>, String> {
     read
 }
 
-/// Every photo and video in /DCIM, with what it weighs and when it was taken.
+/// Every local photo and video exposed by AFC, with what it weighs and when it
+/// was taken. /DCIM is the ordinary camera roll; newer iOS versions also keep
+/// local Photos assets under /PhotoData/CPLAssets.
 pub async fn walk(app: &AppHandle, udid: &str, ticket: u64) -> Result<Vec<Media>, String> {
     let mut afc = files_of(udid).await?;
 
-    let mut pending = vec!["/DCIM".to_string()];
     let mut media = Vec::new();
-
-    // A still, never a video: which .MOV is a Live Photo's clip, with no
-    // thumbnail of its own, is only known once the walk ends.
     let mut latest = None;
 
+    walk_media_root(
+        &mut afc,
+        "/DCIM",
+        app,
+        ticket,
+        &mut media,
+        &mut latest,
+        false,
+    )
+    .await?;
+
+    // These are real local files, but they are not under /DCIM. The database
+    // only annotates them when available; the AFC walk remains the source of
+    // truth even on an iOS version with a different Photos schema.
+    walk_media_root(
+        &mut afc,
+        "/PhotoData/CPLAssets",
+        app,
+        ticket,
+        &mut media,
+        &mut latest,
+        true,
+    )
+    .await?;
+
+    if let Some(database) = photo_database(&mut afc, udid).await {
+        classify_media(&mut media, &database.rows, database.support);
+        add_portrait_renders(&mut afc, &mut media, &database.rows).await?;
+    }
+
+    mark_live_videos(&mut media);
+
+    Ok(media)
+}
+
+async fn walk_media_root(
+    afc: &mut AfcClient,
+    root: &str,
+    app: &AppHandle,
+    ticket: u64,
+    media: &mut Vec<Media>,
+    latest: &mut Option<String>,
+    optional_root: bool,
+) -> Result<(), String> {
+    let mut pending = vec![root.to_string()];
+
     while let Some(directory) = pending.pop() {
-        // Every folder under /DCIM has to be readable. A phone that locks
-        // mid-walk fails the listing of whichever folder is next, and calling
-        // that "an entry that turned out to be a file" hands back a camera roll
-        // with a whole 10xAPPLE missing and nothing said about it.
-        let names = within("cannot read the camera roll", afc.list_dir(&directory)).await?;
+        let names = match within("cannot read the camera roll", afc.list_dir(&directory)).await {
+            Ok(names) => names,
+            Err(_) if optional_root && directory == root => return Ok(()),
+            Err(reason) => return Err(reason),
+        };
 
         for name in names {
             if name == "." || name == ".." {
@@ -129,43 +177,34 @@ pub async fn walk(app: &AppHandle, udid: &str, ticket: u64) -> Result<Vec<Media>
             }
 
             let path = format!("{directory}/{name}");
+            let info = within("cannot read the camera roll", afc.get_file_info(&path)).await?;
 
-            // /DCIM holds folders like 100APPLE and files like IMG_0001.HEIC,
-            // so the extension settles it for every file without a round trip
-            // per entry. What has no extension is asked about — a dozen names
-            // in a camera roll, and the alternative is guessing.
-            let Some((_, extension)) = name.rsplit_once('.') else {
-                let info = within("cannot read the camera roll", afc.get_file_info(&path)).await?;
-
-                if info.st_ifmt == "S_IFDIR" {
-                    pending.push(path)
-                }
-
-                continue;
-            };
-
-            if !MEDIA.contains(&extension.to_lowercase().as_str()) {
+            if info.st_ifmt == "S_IFDIR" {
+                pending.push(path);
                 continue;
             }
 
-            let info = within("cannot read the camera roll", afc.get_file_info(&path)).await?;
+            let Some((_, extension)) = name.rsplit_once('.') else {
+                continue;
+            };
+            if !MEDIA.contains(&extension.to_lowercase().as_str()) {
+                continue;
+            }
 
             let file = Media {
                 path,
                 size: info.size as u64,
                 mtime: info.modified,
                 still: None,
+                classification: MediaClassification::default(),
+                metadata: MediaMetadata::default(),
             };
 
             if !file.is_video() {
-                latest = Some(file.path.clone());
+                *latest = Some(file.path.clone());
             }
-
             media.push(file);
 
-            // Nobody waits for this walk any more: another phone was chosen,
-            // or somebody looked again. Every question it asks slows the walk
-            // that replaced it.
             if media.len() % 100 == 0
                 && !with(app, |state| {
                     state.roll_seen(ticket, media.len(), latest.clone())
@@ -176,15 +215,496 @@ pub async fn walk(app: &AppHandle, udid: &str, ticket: u64) -> Result<Vec<Media>
         }
     }
 
-    mark_live_videos(&mut media);
+    Ok(())
+}
 
-    Ok(media)
+struct PhotoRow {
+    path: String,
+    kind: i64,
+    subtype: i64,
+    playback: i64,
+    depth: i64,
+    adjusted: i64,
+    burst: Option<String>,
+    burst_kind: i64,
+    burst_pick: bool,
+    trashed: bool,
+    created: Option<chrono::NaiveDateTime>,
+    metadata: MediaMetadata,
+}
+
+struct PhotoDatabase {
+    rows: HashMap<String, PhotoRow>,
+    support: MediaSupport,
+}
+
+struct PhotoSource {
+    remote: String,
+    local: PathBuf,
+    size: u64,
+    modified: chrono::NaiveDateTime,
+}
+
+async fn photo_database(afc: &mut AfcClient, udid: &str) -> Option<PhotoDatabase> {
+    let mut sources = Vec::new();
+    for remote in [
+        "/PhotoData/Photos.sqlite",
+        "/PhotoData/Photos.sqlite-wal",
+        "/PhotoData/Photos.sqlite-shm",
+    ] {
+        match within("cannot read Photos.sqlite", afc.get_file_info(remote)).await {
+            Ok(info) => sources.push(PhotoSource {
+                remote: remote.into(),
+                local: photo_cache_dir(udid).join(name_of(remote)),
+                size: info.size as u64,
+                modified: info.modified,
+            }),
+            Err(_) if remote.ends_with("-wal") || remote.ends_with("-shm") => {}
+            Err(_) => return None,
+        }
+    }
+
+    for name in [
+        "Photos.sqlite",
+        "Photos.sqlite-wal",
+        "Photos.sqlite-shm",
+    ] {
+        let remote = format!("/PhotoData/{name}");
+        if !sources.iter().any(|source| source.remote == remote) {
+            let local = photo_cache_dir(udid).join(name);
+            let _ = fs::remove_file(&local);
+            let _ = fs::remove_file(sidecar(&local, "stamp"));
+        }
+    }
+
+    for attempt in 0..2 {
+        if cache_photo_files(afc, &sources, attempt > 0).await.is_err() {
+            return None;
+        }
+
+        let Some(path) = sources.first().map(|source| source.local.clone()) else {
+            return None;
+        };
+        let database = tokio::task::spawn_blocking(move || parse_photo_database(&path))
+            .await
+            .ok()
+            .and_then(Result::ok);
+
+        if let Some(database) = database {
+            return Some(database);
+        }
+    }
+
+    None
+}
+
+fn photo_cache_dir(udid: &str) -> PathBuf {
+    let safe = udid
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
+        .collect::<String>();
+    std::env::temp_dir().join("rollport").join("photos").join(safe)
+}
+
+async fn cache_photo_files(
+    afc: &mut AfcClient,
+    sources: &[PhotoSource],
+    force: bool,
+) -> Result<(), String> {
+    let Some(first) = sources.first() else {
+        return Err("Photos.sqlite is missing".into());
+    };
+    fs::create_dir_all(first.local.parent().unwrap_or(Path::new(".")))
+        .doing("cannot create the Photos.sqlite cache")?;
+
+    for source in sources {
+        let stamp = sidecar(&source.local, "stamp");
+        let expected = format!("{}:{}", source.size, source.modified.and_utc().timestamp_micros());
+        let cached = !force
+            && fs::read_to_string(&stamp).is_ok_and(|actual| actual == expected)
+            && source.local.is_file();
+
+        if cached {
+            continue;
+        }
+
+        let partial = sidecar(&source.local, "part");
+        let mut handle = within(
+            "cannot open Photos.sqlite on the iPhone",
+            afc.open(&source.remote, AfcFopenMode::RdOnly),
+        )
+        .await?;
+        let result: Result<(), String> = async {
+            let mut sink = tokio::fs::File::create(&partial)
+                .await
+                .doing("cannot write the Photos.sqlite cache")?;
+            let mut total = 0u64;
+            loop {
+                let bytes = within("cannot read Photos.sqlite", handle.read_n(CHUNK)).await?;
+                if bytes.is_empty() {
+                    break;
+                }
+                total += bytes.len() as u64;
+                sink.write_all(&bytes)
+                    .await
+                    .doing("cannot write the Photos.sqlite cache")?;
+            }
+            sink.flush()
+                .await
+                .doing("cannot write the Photos.sqlite cache")?;
+            sink.sync_data()
+                .await
+                .doing("cannot write the Photos.sqlite cache")?;
+            if total != source.size {
+                return Err(format!(
+                    "Photos.sqlite cache is short: {} of {} bytes",
+                    total, source.size
+                ));
+            }
+            Ok(())
+        }
+        .await;
+        let closed = within("cannot close Photos.sqlite", handle.close()).await;
+        result?;
+        closed?;
+        fs::rename(&partial, &source.local).doing("cannot finish the Photos.sqlite cache")?;
+        fs::write(&stamp, expected).doing("cannot record the Photos.sqlite cache")?;
+    }
+
+    Ok(())
+}
+
+fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("cache");
+    path.with_file_name(format!("{name}.{suffix}"))
+}
+
+fn parse_photo_database(path: &Path) -> Result<PhotoDatabase, String> {
+    let connection = rusqlite::Connection::open(path).doing("cannot open Photos.sqlite")?;
+    let table = ["ZASSET", "ZGENERICASSET"]
+        .into_iter()
+        .find(|name| {
+            connection
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [*name],
+                    |_| Ok(()),
+                )
+                .is_ok()
+        })
+        .ok_or_else(|| "Photos.sqlite has no asset table".to_string())?;
+
+    let columns = connection
+        .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<std::collections::HashSet<String>, _>>()
+        })
+        .doing("cannot inspect Photos.sqlite")?;
+    let additional_columns = sqlite_columns(&connection, "ZADDITIONALASSETATTRIBUTES");
+    let extended_columns = sqlite_columns(&connection, "ZEXTENDEDATTRIBUTES");
+    let additional_key = ["ZADDITIONALATTRIBUTES", "ZADDITIONALASSETATTRIBUTES"]
+        .into_iter()
+        .find(|name| has_column(&columns, name));
+    let additional_join = additional_columns.is_ok() && additional_key.is_some();
+    let extended_join = extended_columns.is_ok() && has_column(&columns, "ZEXTENDEDATTRIBUTES");
+    let additional_columns = additional_columns.unwrap_or_default();
+    let extended_columns = extended_columns.unwrap_or_default();
+    let has = |name: &str| columns.contains(name);
+    let expression = |name: &str| {
+        if has(name) {
+            format!("asset.\"{name}\"")
+        } else {
+            "NULL".into()
+        }
+    };
+    let extended_field = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|name| {
+                if extended_join && extended_columns.contains(*name) {
+                    Some(format!("extended.\"{name}\""))
+                } else if has(name) {
+                    Some(format!("asset.\"{name}\""))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "NULL".into())
+    };
+    let additional_field = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|name| {
+                if additional_join && additional_columns.contains(*name) {
+                    Some(format!("additional.\"{name}\""))
+                } else if has(name) {
+                    Some(format!("asset.\"{name}\""))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "NULL".into())
+    };
+
+    let support = MediaSupport {
+        database: true,
+        portrait: has("ZDEPTHTYPE"),
+        panorama: has("ZKINDSUBTYPE"),
+        burst: has("ZAVALANCHEUUID") && has("ZAVALANCHEKIND") && has("ZVISIBILITYSTATE"),
+        screenshots: has("ZKINDSUBTYPE"),
+        slow_motion: has("ZKINDSUBTYPE"),
+        portrait_original: has("ZADJUSTMENTSSTATE"),
+    };
+
+    let local_state = expression("ZCLOUDLOCALSTATE");
+    let mut select = vec![
+        expression("ZDIRECTORY"),
+        expression("ZFILENAME"),
+        expression("ZKIND"),
+        expression("ZKINDSUBTYPE"),
+        expression("ZPLAYBACKSTYLE"),
+        expression("ZDEPTHTYPE"),
+        expression("ZADJUSTMENTSSTATE"),
+        expression("ZAVALANCHEUUID"),
+        expression("ZAVALANCHEKIND"),
+        expression("ZAVALANCHEPICKTYPE"),
+        expression("ZVISIBILITYSTATE"),
+        expression("ZTRASHEDSTATE"),
+        expression("ZDATECREATED"),
+    ];
+    select.extend([
+        expression("ZLATITUDE"),
+        expression("ZLONGITUDE"),
+        extended_field(&["ZCAMERAMAKE"]),
+        extended_field(&["ZCAMERAMODEL"]),
+        extended_field(&["ZLENSMODEL"]),
+        extended_field(&["ZISO", "ZISORATING"]),
+        extended_field(&["ZFOCALLENGTH"]),
+        extended_field(&["ZAPERTURE"]),
+        extended_field(&["ZEXPOSURETIME", "ZEXPOSURETIMEVALUE"]),
+        extended_field(&["ZSHUTTERSPEED", "ZSHUTTERSPEEDVALUE"]),
+        additional_field(&["ZTITLE"]),
+        additional_field(&["ZASSETDESCRIPTION", "ZDESCRIPTION"]),
+    ]);
+    let joins = [
+        additional_key.map(|key| {
+            format!(
+                "LEFT JOIN \"ZADDITIONALASSETATTRIBUTES\" additional ON additional.\"Z_PK\" = asset.\"{key}\""
+            )
+        }),
+        extended_join.then(|| {
+            "LEFT JOIN \"ZEXTENDEDATTRIBUTES\" extended ON extended.\"Z_PK\" = asset.\"ZEXTENDEDATTRIBUTES\"".to_string()
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ");
+    let sql = format!(
+        "SELECT {} FROM \"{table}\" asset {joins} WHERE asset.\"ZDIRECTORY\" LIKE 'DCIM/%' OR ({local_state} = 1 AND (asset.\"ZDIRECTORY\" LIKE 'PhotoData/%' OR asset.\"ZDIRECTORY\" = 'CPLAssets' OR asset.\"ZDIRECTORY\" LIKE 'CPLAssets/%'))",
+        select.join(", "),
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .doing("cannot query Photos.sqlite")?;
+    let rows = statement
+        .query_map([], |row| {
+            let directory: String = row.get(0)?;
+            let filename: String = row.get(1)?;
+            let directory = if directory == "CPLAssets" || directory.starts_with("CPLAssets/") {
+                format!("PhotoData/{directory}")
+            } else {
+                directory
+            };
+            let path = format!(
+                "/{}/{filename}",
+                directory.trim_end_matches('/')
+            );
+            let pick_type = row.get::<_, Option<i64>>(9)?.unwrap_or_default();
+            let visibility = row.get::<_, Option<i64>>(10)?;
+            Ok(PhotoRow {
+                path,
+                kind: row.get::<_, Option<i64>>(2)?.unwrap_or_default(),
+                subtype: row.get::<_, Option<i64>>(3)?.unwrap_or_default(),
+                playback: row.get::<_, Option<i64>>(4)?.unwrap_or_default(),
+                depth: row.get::<_, Option<i64>>(5)?.unwrap_or_default(),
+                adjusted: row.get::<_, Option<i64>>(6)?.unwrap_or_default(),
+                burst: row.get(7)?,
+                burst_kind: row.get::<_, Option<i64>>(8)?.unwrap_or_default(),
+                burst_pick: visibility == Some(0)
+                    || (visibility.is_none() && pick_type & 16 != 0),
+                trashed: row.get::<_, Option<i64>>(11)?.unwrap_or_default() == 1,
+                created: row
+                    .get::<_, Option<f64>>(12)?
+                    .and_then(apple_date),
+                metadata: MediaMetadata {
+                    latitude: coordinate(row.get(13)?, -90.0, 90.0),
+                    longitude: coordinate(row.get(14)?, -180.0, 180.0),
+                    camera_make: text(row.get(15)?),
+                    camera_model: text(row.get(16)?),
+                    lens_model: text(row.get(17)?),
+                    iso: row.get(18)?,
+                    focal_length: row.get(19)?,
+                    aperture: row.get(20)?,
+                    exposure_time: row.get(21)?,
+                    shutter_speed: row.get(22)?,
+                    title: text(row.get(23)?),
+                    description: text(row.get(24)?),
+                },
+            })
+        })
+        .doing("cannot read Photos.sqlite")?
+        .collect::<Result<Vec<_>, _>>()
+        .doing("cannot read Photos.sqlite")?;
+
+    Ok(PhotoDatabase {
+        rows: rows
+            .into_iter()
+            .map(|row| (row.path.to_lowercase(), row))
+            .collect(),
+        support,
+    })
+}
+
+fn sqlite_columns(
+    connection: &rusqlite::Connection,
+    table: &str,
+) -> Result<std::collections::HashSet<String>, String> {
+    connection
+        .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<std::collections::HashSet<String>, _>>()
+        })
+        .doing("cannot inspect Photos.sqlite")
+}
+
+fn has_column(columns: &std::collections::HashSet<String>, name: &str) -> bool {
+    columns.contains(name)
+}
+
+fn text(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    })
+}
+
+fn coordinate(value: Option<f64>, minimum: f64, maximum: f64) -> Option<f64> {
+    value.filter(|value| value.is_finite() && *value >= minimum && *value <= maximum)
+}
+
+fn apple_date(seconds: f64) -> Option<chrono::NaiveDateTime> {
+    chrono::DateTime::from_timestamp(978_307_200 + seconds as i64, 0).map(|date| date.naive_utc())
+}
+
+fn classify_media(media: &mut [Media], rows: &HashMap<String, PhotoRow>, support: MediaSupport) {
+    for file in media {
+        file.classification.support = support;
+        let Some(row) = rows.get(&file.path.to_lowercase()) else {
+            continue;
+        };
+
+        if let Some(created) = row.created {
+            file.mtime = created;
+        }
+        file.metadata = row.metadata.clone();
+        file.classification.known = true;
+        file.classification.live = row.subtype == 2 || row.playback == 3;
+        file.classification.portrait = row.kind == 0 && row.depth == 1;
+        file.classification.portrait_original = false;
+        file.classification.panorama = row.kind == 0 && row.subtype == 1;
+        file.classification.burst = (row.kind == 0 && row.burst_kind == 1)
+            .then_some(row.burst.as_ref().map(|_| row.burst_pick))
+            .flatten();
+        file.classification.screenshot = row.kind == 0 && row.subtype == 10;
+        file.classification.slow_motion = row.kind == 1 && row.subtype == 101;
+        file.classification.trashed = row.trashed;
+    }
+}
+
+async fn add_portrait_renders(
+    afc: &mut AfcClient,
+    media: &mut Vec<Media>,
+    rows: &HashMap<String, PhotoRow>,
+) -> Result<(), String> {
+    const ROOT: &str = "/PhotoData/Mutations/DCIM";
+    let mut pending = vec![ROOT.to_string()];
+    let mut renders = Vec::new();
+    let mut originals = Vec::new();
+
+    while let Some(directory) = pending.pop() {
+        let names = match within("cannot read PhotoData/Mutations", afc.list_dir(&directory)).await {
+            Ok(names) => names,
+            Err(_) if directory == ROOT => return Ok(()),
+            Err(reason) => return Err(reason),
+        };
+        for name in names {
+            if name == "." || name == ".." {
+                continue;
+            }
+            let path = format!("{directory}/{name}");
+            let info = within("cannot read PhotoData/Mutations", afc.get_file_info(&path)).await?;
+            if info.st_ifmt == "S_IFDIR" {
+                pending.push(path);
+                continue;
+            }
+            if !name.eq_ignore_ascii_case("FullSizeRender.heic")
+                && !name.eq_ignore_ascii_case("FullSizeRender.jpg")
+            {
+                continue;
+            }
+
+            let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+            let Some(adjustments) = parts.iter().position(|part| *part == "Adjustments") else {
+                continue;
+            };
+            let original_stem = format!("/{}", parts[..adjustments].join("/")).to_lowercase();
+            let Some(row) = rows.values().find(|row| {
+                stem(&row.path).to_lowercase() == original_stem
+                    && row.kind == 0
+                    && row.depth == 1
+                    && row.adjusted != 0
+            }) else {
+                continue;
+            };
+
+            originals.push(original_stem);
+            let mut classification = MediaClassification::default();
+            classification.known = true;
+            classification.support = media
+                .first()
+                .map(|file| file.classification.support)
+                .unwrap_or_default();
+            classification.portrait = true;
+            classification.portrait_render = true;
+            renders.push(Media {
+                path,
+                size: info.size as u64,
+                mtime: row.created.unwrap_or(info.modified),
+                still: None,
+                classification,
+                metadata: row.metadata.clone(),
+            });
+        }
+    }
+
+    for file in media.iter_mut() {
+        if originals.contains(&stem(&file.path).to_lowercase()) {
+            file.classification.portrait_original = true;
+        }
+    }
+    media.extend(renders);
+    Ok(())
 }
 
 /// A .mov beside an image of the same name is the video half of a Live Photo,
 /// and carries the image's time.
 pub fn mark_live_videos(media: &mut [Media]) {
-    let images: std::collections::HashMap<String, chrono::NaiveDateTime> = media
+    let images: HashMap<String, (chrono::NaiveDateTime, MediaMetadata)> = media
         .iter()
         .filter(|file| {
             matches!(
@@ -192,15 +712,49 @@ pub fn mark_live_videos(media: &mut [Media]) {
                 Some("heic" | "heif" | "jpg" | "jpeg" | "dng")
             )
         })
-        .map(|file| (stem(&file.path), file.mtime))
+        .map(|file| (stem(&file.path), (file.mtime, file.metadata.clone())))
         .collect();
 
     for file in media.iter_mut() {
-        file.still = match extension(&file.path).as_deref() {
-            Some("mov") => images.get(&stem(&file.path)).copied(),
+        if let Some(still) = match extension(&file.path).as_deref() {
+            Some("mov") => images.get(&stem(&file.path)).cloned(),
             _ => None,
-        };
+        } {
+            file.still = Some(still.0);
+            fill_metadata(&mut file.metadata, &still.1);
+            file.classification.live_video = true;
+        }
     }
+
+    let live_stems: std::collections::HashSet<String> = media
+        .iter()
+        .filter(|file| file.is_live_video())
+        .map(|file| stem(&file.path))
+        .collect();
+
+    for file in media.iter_mut() {
+        if !file.is_video() && live_stems.contains(&stem(&file.path)) {
+            file.classification.live = true;
+        }
+    }
+}
+
+fn fill_metadata(target: &mut MediaMetadata, source: &MediaMetadata) {
+    target.latitude = target.latitude.or(source.latitude);
+    target.longitude = target.longitude.or(source.longitude);
+    target.camera_make = target.camera_make.clone().or_else(|| source.camera_make.clone());
+    target.camera_model = target.camera_model.clone().or_else(|| source.camera_model.clone());
+    target.lens_model = target.lens_model.clone().or_else(|| source.lens_model.clone());
+    target.iso = target.iso.or(source.iso);
+    target.focal_length = target.focal_length.or(source.focal_length);
+    target.aperture = target.aperture.or(source.aperture);
+    target.exposure_time = target.exposure_time.or(source.exposure_time);
+    target.shutter_speed = target.shutter_speed.or(source.shutter_speed);
+    target.title = target.title.clone().or_else(|| source.title.clone());
+    target.description = target
+        .description
+        .clone()
+        .or_else(|| source.description.clone());
 }
 
 pub fn extension(path: &str) -> Option<String> {
@@ -273,11 +827,245 @@ const WORKERS: usize = 4;
 const ATTEMPTS: u32 = 3;
 const BACKOFF: Duration = Duration::from_millis(250);
 
+#[derive(Clone)]
+struct MetadataWriter {
+    tool: Arc<Mutex<ExifTool>>,
+}
+
+struct ExifTool {
+    _child: Child,
+    input: ChildStdin,
+    output: BufReader<ChildStdout>,
+}
+
+impl Drop for ExifTool {
+    fn drop(&mut self) {
+        let _ = self._child.kill();
+        let _ = self._child.wait();
+    }
+}
+
+impl MetadataWriter {
+    fn new(
+        app: &AppHandle,
+        settings: MetadataSettings,
+        media: &[Media],
+    ) -> Result<Option<Self>, String> {
+        if !media
+            .iter()
+            .any(|file| metadata_needed(file, settings))
+        {
+            return Ok(None);
+        }
+
+        let tool = exiftool_path(app).ok_or_else(|| {
+            "metadata processing is enabled, but the bundled ExifTool is missing".to_string()
+        })?;
+        let mut child = Command::new(tool)
+            .args([
+                "-stay_open",
+                "True",
+                "-@",
+                "-",
+                "-charset",
+                "filename=utf8",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .doing("cannot start ExifTool")?;
+        let input = match child.stdin.take() {
+            Some(input) => input,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("cannot open ExifTool input".into());
+            }
+        };
+        let output = match child.stdout.take() {
+            Some(output) => output,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("cannot open ExifTool output".into());
+            }
+        };
+
+        Ok(Some(Self {
+            tool: Arc::new(Mutex::new(ExifTool {
+                _child: child,
+                input,
+                output: BufReader::new(output),
+            })),
+        }))
+    }
+
+    async fn apply(
+        &self,
+        path: &Path,
+        metadata: &MediaMetadata,
+        settings: MetadataSettings,
+    ) -> Result<(), String> {
+        let path = path.to_path_buf();
+        let metadata = metadata.clone();
+        let tool = self.tool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut tool = tool.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            tool.apply(&path, &metadata, settings)
+        })
+        .await
+        .doing("ExifTool stopped unexpectedly")?
+    }
+}
+
+impl ExifTool {
+    fn apply(
+        &mut self,
+        path: &Path,
+        metadata: &MediaMetadata,
+        settings: MetadataSettings,
+    ) -> Result<(), String> {
+        let mut args = vec!["-overwrite_original".to_string(), "-P".to_string()];
+        let mut writes = false;
+
+        if settings.location == MetadataMode::FillMissing {
+            if let (Some(latitude), Some(longitude)) = (metadata.latitude, metadata.longitude) {
+                args.push("-wm=c".into());
+                args.push(format!("-GPSLatitude={latitude}"));
+                args.push(format!("-GPSLongitude={longitude}"));
+                writes = true;
+            }
+        }
+
+        if settings.camera == MetadataMode::FillMissing {
+            let before = args.len();
+            args.push("-wm=c".into());
+            writes |= push_text(&mut args, "Make", metadata.camera_make.as_deref());
+            writes |= push_text(&mut args, "Model", metadata.camera_model.as_deref());
+            writes |= push_text(&mut args, "LensModel", metadata.lens_model.as_deref());
+            writes |= push_number(&mut args, "ISO", metadata.iso);
+            writes |= push_number(&mut args, "FocalLength", metadata.focal_length);
+            writes |= push_number(&mut args, "FNumber", metadata.aperture);
+            writes |= push_number(&mut args, "ExposureTime", metadata.exposure_time);
+            writes |= push_number(&mut args, "ShutterSpeedValue", metadata.shutter_speed);
+            if args.len() == before + 1 {
+                args.pop();
+            }
+        }
+
+        if settings.title == MetadataMode::FillMissing {
+            let before = args.len();
+            args.push("-wm=c".into());
+            writes |= push_text(&mut args, "Title", metadata.title.as_deref());
+            writes |= push_text(&mut args, "Description", metadata.description.as_deref());
+            if args.len() == before + 1 {
+                args.pop();
+            }
+        }
+
+        if !writes {
+            return Ok(());
+        }
+
+        args.push(path.to_string_lossy().into_owned());
+        for argument in args {
+            writeln!(self.input, "{argument}")
+                .doing("cannot send metadata to ExifTool")?;
+        }
+        writeln!(self.input, "-execute")
+            .doing("cannot send metadata command to ExifTool")?;
+        self.input
+            .flush()
+            .doing("cannot flush metadata command")?;
+
+        let mut output = String::new();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if self
+                .output
+                .read_line(&mut line)
+                .doing("cannot read ExifTool output")?
+                == 0
+            {
+                return Err("ExifTool closed before reporting the result".into());
+            }
+            if line.trim_end() == "{ready}" {
+                break;
+            }
+            output.push_str(&line);
+        }
+
+        if output
+            .lines()
+            .any(|line| line.starts_with("Error:") || line.starts_with("Warning:"))
+        {
+            return Err(output.trim().to_string());
+        }
+
+        Ok(())
+    }
+}
+
+fn exiftool_path(app: &AppHandle) -> Option<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = std::env::var_os("ROLLPORT_EXIFTOOL") {
+        paths.push(PathBuf::from(path));
+    }
+    if let Ok(resource) = app.path().resource_dir() {
+        paths.push(resource.join("exiftool").join("exiftool.exe"));
+    }
+    paths.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("exiftool")
+            .join("exiftool.exe"),
+    );
+    paths.into_iter().find(|path| path.is_file())
+}
+
+fn metadata_needed(file: &Media, settings: MetadataSettings) -> bool {
+    (settings.location == MetadataMode::FillMissing
+            && file.metadata.latitude.is_some()
+            && file.metadata.longitude.is_some())
+        || (settings.camera == MetadataMode::FillMissing
+            && (file.metadata.camera_make.is_some()
+                || file.metadata.camera_model.is_some()
+                || file.metadata.lens_model.is_some()
+                || file.metadata.iso.is_some()
+                || file.metadata.focal_length.is_some()
+                || file.metadata.aperture.is_some()
+                || file.metadata.exposure_time.is_some()
+                || file.metadata.shutter_speed.is_some()))
+        || (settings.title == MetadataMode::FillMissing
+            && (file.metadata.title.is_some() || file.metadata.description.is_some()))
+}
+
+fn push_text(args: &mut Vec<String>, tag: &str, value: Option<&str>) -> bool {
+    if let Some(value) = value {
+        args.push(format!("-{tag}={value}"));
+        true
+    } else {
+        false
+    }
+}
+
+fn push_number<T: std::fmt::Display>(args: &mut Vec<String>, tag: &str, value: Option<T>) -> bool {
+    if let Some(value) = value {
+        args.push(format!("-{tag}={value}"));
+        true
+    } else {
+        false
+    }
+}
+
 pub async fn copy_all(
     app: &AppHandle,
     udid: &str,
     destination: &Path,
     media: Vec<Media>,
+    metadata: Vec<Media>,
     settings: Settings,
     cancel: &Arc<AtomicBool>,
 ) -> Result<Report, String> {
@@ -287,6 +1075,9 @@ pub async fn copy_all(
     let mut first = Some(files_of(udid).await?);
 
     // Opening rollport-library.db is blocking work, kept off the async workers.
+    let metadata_settings = settings.metadata;
+    let metadata_keys: Vec<Key> = metadata.iter().map(key).collect();
+    let metadata_count = metadata_keys.len();
     let opened = tokio::task::spawn_blocking({
         let destination = destination.to_path_buf();
 
@@ -316,7 +1107,11 @@ pub async fn copy_all(
 
     // Held until the copy returns, and let go by the system if the app dies.
     let (library, layout, _lock) = opened?;
-    let fetch = Arc::new(media);
+    let mut all_media = metadata;
+    all_media.extend(media);
+    let fetch = Arc::new(all_media);
+    let metadata = MetadataWriter::new(app, metadata_settings, &fetch)?
+        .map(Arc::new);
 
     let total = fetch.len();
     let total_bytes = fetch.iter().map(|file| file.size).sum::<u64>();
@@ -337,6 +1132,7 @@ pub async fn copy_all(
 
     let mut done = 0;
     let mut imported = 0;
+    let mut updated = 0;
     let mut lost = Lost::default();
     let mut bytes = 0;
     let mut copied_bytes = 0;
@@ -359,13 +1155,14 @@ pub async fn copy_all(
         // its share of the queue to the others.
         let mut afc = first.take();
 
-        let (fetch, cursor, tx, cancel, streamed, held) = (
+        let (fetch, cursor, tx, cancel, streamed, held, metadata) = (
             fetch.clone(),
             cursor.clone(),
             tx.clone(),
             cancel.clone(),
             streamed.clone(),
             held.clone(),
+            metadata.clone(),
         );
         let (udid, destination, layout) =
             (udid.to_string(), destination.to_path_buf(), layout.clone());
@@ -408,6 +1205,9 @@ pub async fn copy_all(
                         &cancel,
                         &streamed,
                         &held,
+                        metadata.as_deref(),
+                        metadata_settings,
+                        index < metadata_count,
                     )
                     .await;
 
@@ -443,6 +1243,9 @@ pub async fn copy_all(
 
         let recorded = match outcome {
             Ok(Copied::Fetched) => {
+                if index < metadata_count {
+                    updated += 1;
+                }
                 imported += 1;
                 landed.push(file);
                 copied_bytes += file.size;
@@ -456,7 +1259,12 @@ pub async fn copy_all(
             }
             // It was already on disk but the folder had never been told.
             // Recording it is what stops it being offered as new for ever.
-            Ok(Copied::Already) => library.record(file),
+            Ok(Copied::Already) => {
+                if index < metadata_count {
+                    updated += 1;
+                }
+                library.record(file)
+            }
             // A folder that cannot be written to is the end of the run: every
             // file left would fail the same way, three times each, with a
             // timeout between.
@@ -539,9 +1347,19 @@ pub async fn copy_all(
     }
 
     let end = ending(fatal, full, cancel.load(Ordering::Relaxed));
+    let trouble = lost.trouble();
+    if matches!(&end, End::Done)
+        && trouble.is_none()
+        && (matches!(metadata_settings.location, MetadataMode::FillMissing)
+            || matches!(metadata_settings.camera, MetadataMode::FillMissing)
+            || matches!(metadata_settings.title, MetadataMode::FillMissing))
+    {
+        library.mark_metadata_migrated(&metadata_keys)?;
+    }
 
     Ok(Report {
         imported,
+        updated,
         bytes: copied_bytes,
         seconds: started.elapsed().as_secs(),
         end,
@@ -549,7 +1367,7 @@ pub async fn copy_all(
         udid: udid.to_string(),
         // One unreadable file is not a reason to abandon the other nine
         // thousand, so what it was is reported at the end of the run.
-        trouble: lost.trouble(),
+        trouble,
     })
 }
 
@@ -735,12 +1553,23 @@ impl<T> Local<T> for Result<T, std::io::Error> {
             // The disk filled while the file was written, by something else or
             // past what the room check saw: the same as not fitting at all.
             std::io::ErrorKind::StorageFull => Failed::Full,
-            _ => Failed::Folder(format!("{what}: {e}")),
+            _ => {
+                let detail = match e.raw_os_error() {
+                    // Windows localizes this message, but the meaning is stable
+                    // and the app UI is otherwise English.
+                    Some(1006) =>
+                        "the destination volume changed while the file was open (Windows error 1006)"
+                            .to_string(),
+                    Some(code) => format!("OS error {code}"),
+                    None => "the operating system rejected the file operation".to_string(),
+                };
+                Failed::Folder(format!("{what}: {detail}"))
+            }
         })
     }
 }
 
-pub async fn copy(
+async fn copy(
     afc: &mut AfcClient,
     file: &Media,
     destination: &Path,
@@ -748,6 +1577,9 @@ pub async fn copy(
     cancel: &AtomicBool,
     streamed: &AtomicU64,
     held: &Mutex<u64>,
+    metadata_writer: Option<&MetadataWriter>,
+    metadata_settings: MetadataSettings,
+    metadata_existing: bool,
 ) -> Result<Copied, Failed> {
     let name = name_of(&file.path);
     let rendered = render(layout, name, local(file.taken()));
@@ -774,14 +1606,18 @@ pub async fn copy(
     // so the capture time has to match too, and we set that on every copy.
     // The legacy CLI never made this claim at all; it suffixed and downloaded
     // again. This is that, minus re-downloading what is demonstrably here.
-    if let Ok(existing) = fs::metadata(&target)
-        && existing.len() == file.size
-        && existing
-            .modified()
-            .ok()
-            .and_then(|when| when.duration_since(UNIX_EPOCH).ok())
-            .is_some_and(|since| since.as_secs() as i64 == file.mtime.and_utc().timestamp())
-    {
+    if let Some(existing) = existing_target(
+        &target,
+        file.size,
+        file.mtime.and_utc().timestamp(),
+        metadata_existing,
+    ) {
+        if let Some(metadata_writer) = metadata_writer {
+            metadata_writer
+                .apply(&existing, &file.metadata, metadata_settings)
+                .await
+                .map_err(|reason| Failed::File(format!("cannot write metadata: {reason}")))?;
+        }
         return Ok(Copied::Already);
     }
 
@@ -899,6 +1735,13 @@ pub async fn copy(
         )));
     }
 
+    if let Some(metadata_writer) = metadata_writer {
+        metadata_writer
+            .apply(&partial, &file.metadata, metadata_settings)
+            .await
+            .map_err(|reason| Failed::File(format!("cannot write metadata: {reason}")))?;
+    }
+
     // Only a whole file gets the real name.
     let target = claim(target)?;
 
@@ -919,6 +1762,58 @@ pub async fn copy(
         .and_then(|done| done.set_modified(SystemTime::from(file.mtime.and_utc())));
 
     Ok(Copied::Fetched)
+}
+
+fn existing_target(
+    target: &Path,
+    size: u64,
+    mtime: i64,
+    allow_size_change: bool,
+) -> Option<PathBuf> {
+    let matches = |candidate: &Path| {
+        let metadata = fs::metadata(candidate).ok()?;
+        if !metadata.is_file()
+            || (!allow_size_change && metadata.len() != size)
+            || metadata
+                .modified()
+                .ok()?
+                .duration_since(UNIX_EPOCH)
+                .ok()?
+                .as_secs() as i64
+                != mtime
+        {
+            return None;
+        }
+        Some(candidate.to_path_buf())
+    };
+
+    if let Some(existing) = matches(target) {
+        return Some(existing);
+    }
+    if !allow_size_change {
+        return None;
+    }
+
+    let parent = target.parent()?;
+    let stem = target.file_stem()?.to_str()?;
+    let extension = target.extension().and_then(|extension| extension.to_str());
+    fs::read_dir(parent)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|candidate| {
+            let Some(candidate_stem) = candidate.file_stem().and_then(|stem| stem.to_str()) else {
+                return false;
+            };
+            let suffixed = candidate_stem
+                .strip_prefix(&format!("{stem}_"))
+                .is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
+                });
+            (candidate_stem == stem || suffixed)
+                && candidate.extension().and_then(|extension| extension.to_str()) == extension
+                && matches(candidate).is_some()
+        })
 }
 
 /// One file's share of the room on the disk, from before its first byte
@@ -1567,6 +2462,8 @@ mod tests {
             size: 1,
             mtime: when("2026-09-02 15:04:11"),
             still: None,
+            classification: MediaClassification::default(),
+            metadata: MediaMetadata::default(),
         };
 
         let mut media = vec![
@@ -1596,6 +2493,8 @@ mod tests {
             size: 1,
             mtime: when(at),
             still: None,
+            classification: MediaClassification::default(),
+            metadata: MediaMetadata::default(),
         };
 
         let mut media = vec![

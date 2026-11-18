@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    panic::PanicHookInfo,
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
@@ -17,7 +18,8 @@ use tauri::{
 use library::{Library, read_folder};
 use phone::{copy_all, walk, watch};
 use state::{
-    End, Flow, Folder, FolderFacts, Import, Next, Range, Reading, Report, Roll, State, Takes,
+    End, Flow, Folder, FolderFacts, Import, MediaSelection, MetadataSettings, Next, Range,
+    Reading, Report, Roll, State, Takes,
 };
 
 trait Context<T> {
@@ -86,6 +88,39 @@ impl Remembered {
             let _ = fs::rename(&beside, &file);
         }
     }
+}
+
+const CRASH_REPORT: &str = "last-crash.log";
+
+fn crash_report_file(app: &AppHandle) -> Option<PathBuf> {
+    Some(app.path().app_config_dir().ok()?.join(CRASH_REPORT))
+}
+
+fn install_crash_reporter(app: &AppHandle) {
+    let Some(file) = crash_report_file(app) else {
+        return;
+    };
+
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info: &PanicHookInfo<'_>| {
+        let report = format!(
+            "Rollport가 비정상 종료되었습니다.\n\n{info}\n\nBacktrace:\n{}\n",
+            std::backtrace::Backtrace::force_capture()
+        );
+
+        if let Some(parent) = file.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(&file, report);
+        previous(info);
+    }));
+}
+
+fn take_crash_report(app: &AppHandle) -> Option<String> {
+    let file = crash_report_file(app)?;
+    let report = fs::read_to_string(&file).ok()?;
+    let _ = fs::remove_file(file);
+    Some(report)
 }
 
 struct Current(Mutex<State>);
@@ -182,7 +217,7 @@ async fn facts(path: &Path) -> Result<FolderFacts, String> {
 }
 
 /// Ample for a library on a slow network drive.
-const FOLDER_ANSWERS: std::time::Duration = std::time::Duration::from_secs(30);
+const FOLDER_ANSWERS: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Read a phone's camera roll, and again every few seconds while it fails:
 /// a locked phone answers lockdown but not its own files, and unlocking it
@@ -225,6 +260,7 @@ async fn start_import(app: AppHandle) {
         path,
         settings,
         media,
+        metadata,
         cancel,
     }) = with(&app, |state| {
         let import = state.start_import()?;
@@ -243,13 +279,16 @@ async fn start_import(app: AppHandle) {
     // copying for ever, everything is refused, and Stop reaches nothing.
     let run = guarded(spawn({
         let (app, path, udid) = (app.clone(), path.clone(), udid.clone());
-        async move { copy_all(&app, &udid, &path, media, settings, &cancel).await }
+        async move {
+            copy_all(&app, &udid, &path, media, metadata, settings, &cancel).await
+        }
     }))
     .await;
 
     // Before a file moved: the phone would not talk, or rollport-library.db would not open.
     let report = run.unwrap_or_else(|reason| Report {
         imported: 0,
+        updated: 0,
         bytes: 0,
         seconds: 0,
         end: End::Failed { reason },
@@ -270,6 +309,12 @@ async fn start_import(app: AppHandle) {
 #[tauri::command]
 async fn cancel_import(app: AppHandle) {
     lock(&app).stop()
+}
+
+/// Dismiss a finished or stopped import, going back to the ready state.
+#[tauri::command]
+async fn dismiss_import(app: AppHandle) {
+    with(&app, |state| state.dismiss());
 }
 
 #[tauri::command]
@@ -335,7 +380,7 @@ fn phone_of(app: &AppHandle, udid: &str, path: &str) -> Option<String> {
 
     let known = match phone.roll.as_ref()? {
         Roll::Reading { announced, .. } => announced.iter().any(|file| file == path),
-        Roll::Done { media } => media.iter().any(|file| file.path == path),
+        Roll::Done { media, .. } => media.iter().any(|file| file.path == path),
     };
 
     known.then(|| phone.udid.clone())
@@ -450,7 +495,7 @@ async fn reveal_destination(app: AppHandle) {
 }
 
 /// Where the help pages are on the site.
-const HELP: &str = "https://artificiadrian.github.io/rollport/help";
+const HELP: &str = "https://dont-do-it-now.github.io/rollport/help";
 
 #[derive(serde::Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
@@ -505,6 +550,25 @@ async fn set_range(range: Range, app: AppHandle) {
 async fn set_takes(takes: Takes, app: AppHandle) {
     let changed = with(&app, |state| state.set_takes(takes));
     write_settings(&app, changed).await
+}
+
+#[tauri::command]
+async fn set_media_options(options: MediaSelection, app: AppHandle) {
+    let changed = with(&app, |state| state.set_media_options(options));
+    write_settings(&app, changed).await
+}
+
+#[tauri::command]
+async fn set_metadata_options(metadata: MetadataSettings, app: AppHandle) {
+    let changed = with(&app, |state| state.set_metadata_options(metadata));
+    write_settings(&app, changed.clone()).await;
+
+    if let Some(path) = changed {
+        let _ = spawn_blocking(move || {
+            Library::open(&path)?.clear_metadata_progress()
+        })
+        .await;
+    }
 }
 
 /// Say what this folder names files, or hear why it cannot.
@@ -750,6 +814,23 @@ pub fn run() {
         })
         .setup(|app| {
             let handle = app.handle().clone();
+            let previous_crash = take_crash_report(&handle);
+            install_crash_reporter(&handle);
+
+            if let Some(report) = previous_crash {
+                let report = report.chars().take(8_000).collect::<String>();
+                tauri::async_runtime::spawn(async move {
+                    let _ = rfd::AsyncMessageDialog::new()
+                        .set_level(rfd::MessageLevel::Error)
+                        .set_title("Rollport 비정상 종료 기록")
+                        .set_description(format!(
+                            "이전 실행 중 프로그램이 예기치 않게 종료되었습니다.\n\n{report}\n\n상세 기록: 설정 폴더의 {CRASH_REPORT}"
+                        ))
+                        .set_buttons(rfd::MessageButtons::Ok)
+                        .show()
+                        .await;
+                });
+            }
 
             #[cfg(target_os = "macos")]
             menu(&handle)?;
@@ -796,8 +877,11 @@ pub fn run() {
             use_suggested_destination,
             start_import,
             cancel_import,
+            dismiss_import,
             set_range,
             set_takes,
+            set_media_options,
+            set_metadata_options,
             set_layout,
             rescan,
             reveal_destination,

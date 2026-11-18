@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    library::{Key, new},
+    library::{Key, key, new},
     phone::extension,
 };
 
@@ -81,6 +81,7 @@ pub struct Batch {
     pub bytes: u64,
     pub videos: usize,
     pub clips: usize,
+    pub kinds: MediaCounts,
     /// The newest few, by path on the phone, newest first: what the window
     /// shows as prints. A Live Photo's clip is never one; its still is.
     pub newest: Vec<String>,
@@ -99,6 +100,7 @@ impl Batch {
             batch.bytes += file.size;
             batch.videos += usize::from(file.is_video() && !file.is_live_video());
             batch.clips += usize::from(file.is_live_video());
+            batch.kinds.add(file);
 
             if !file.is_live_video() {
                 newest.push(file);
@@ -122,11 +124,148 @@ pub struct Media {
     /// share a second, and a pair is only a pair to other apps while the
     /// names match, so the clip is named and dated with its still.
     pub still: Option<chrono::NaiveDateTime>,
+    pub classification: MediaClassification,
+    pub metadata: MediaMetadata,
+}
+
+#[derive(Clone, Default)]
+pub struct MediaMetadata {
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub camera_make: Option<String>,
+    pub camera_model: Option<String>,
+    pub lens_model: Option<String>,
+    pub iso: Option<i64>,
+    pub focal_length: Option<f64>,
+    pub aperture: Option<f64>,
+    pub exposure_time: Option<f64>,
+    pub shutter_speed: Option<f64>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaSelection {
+    pub standard: bool,
+    pub live: bool,
+    pub live_videos: bool,
+    pub portrait: bool,
+    pub portrait_original: bool,
+    pub panorama: bool,
+    pub burst: bool,
+    pub burst_all: bool,
+    pub screenshots: bool,
+    pub videos: bool,
+    pub slow_motion: bool,
+}
+
+impl Default for MediaSelection {
+    fn default() -> Self {
+        Self {
+            standard: true,
+            live: true,
+            live_videos: false,
+            portrait: true,
+            portrait_original: false,
+            panorama: true,
+            burst: true,
+            burst_all: false,
+            screenshots: true,
+            videos: true,
+            slow_motion: true,
+        }
+    }
+}
+
+#[derive(Serialize, Clone, Copy, PartialEq, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaSupport {
+    pub database: bool,
+    pub portrait: bool,
+    pub panorama: bool,
+    pub burst: bool,
+    pub screenshots: bool,
+    pub slow_motion: bool,
+    pub portrait_original: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct MediaClassification {
+    pub known: bool,
+    pub support: MediaSupport,
+    pub live: bool,
+    pub live_video: bool,
+    pub portrait: bool,
+    pub portrait_original: bool,
+    pub portrait_render: bool,
+    pub panorama: bool,
+    pub burst: Option<bool>,
+    pub screenshot: bool,
+    pub slow_motion: bool,
+    pub trashed: bool,
+}
+
+#[derive(Serialize, Clone, Copy, PartialEq, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCounts {
+    pub standard: usize,
+    pub live: usize,
+    pub live_videos: usize,
+    pub portrait: usize,
+    pub portrait_original: usize,
+    pub panorama: usize,
+    pub burst: usize,
+    pub burst_all: usize,
+    pub screenshots: usize,
+    pub videos: usize,
+    pub slow_motion: usize,
+}
+
+impl MediaCounts {
+    pub fn add(&mut self, file: &Media) {
+        if file.classification.trashed {
+            return;
+        }
+
+        if file.is_standard() {
+            self.standard += 1;
+        }
+        if file.classification.live && !file.is_live_video() {
+            self.live += 1;
+        }
+        if file.is_live_video() {
+            self.live_videos += 1;
+        }
+        if file.classification.portrait && !file.classification.portrait_render {
+            self.portrait += 1;
+        }
+        if file.classification.portrait_original {
+            self.portrait_original += 1;
+        }
+        if file.classification.panorama {
+            self.panorama += 1;
+        }
+        if let Some(pick) = file.classification.burst {
+            self.burst_all += 1;
+            if pick {
+                self.burst += 1;
+            }
+        }
+        if file.classification.screenshot {
+            self.screenshots += 1;
+        }
+        if file.classification.slow_motion {
+            self.slow_motion += 1;
+        } else if file.is_video() && !file.is_live_video() {
+            self.videos += 1;
+        }
+    }
 }
 
 impl Media {
     pub fn is_live_video(&self) -> bool {
-        self.still.is_some()
+        self.still.is_some() || self.classification.live_video
     }
 
     /// The time the file is named and dated with.
@@ -141,6 +280,80 @@ impl Media {
             Some("mov" | "mp4" | "m4v")
         )
     }
+
+    /// iPhone screenshots are always saved as PNG.
+    pub fn is_screenshot(&self) -> bool {
+        self.classification.screenshot
+            || matches!(extension(&self.path).as_deref(), Some("png"))
+    }
+
+    pub fn is_standard(&self) -> bool {
+        if self.classification.known {
+            !self.is_video()
+                && !self.classification.live
+                && !self.classification.portrait
+                && !self.classification.panorama
+                && self.classification.burst.is_none()
+                && !self.classification.screenshot
+        } else {
+            !self.is_video() && !self.is_live_video()
+        }
+    }
+
+    pub fn selected(&self, selection: MediaSelection) -> bool {
+        if self.classification.trashed {
+            return false;
+        }
+        if self.is_live_video() {
+            return selection.live_videos;
+        }
+        if self.classification.live {
+            return selection.live;
+        }
+        if self.classification.portrait {
+            if self.classification.portrait_render {
+                return selection.portrait;
+            }
+            if self.classification.portrait_original {
+                return selection.portrait && selection.portrait_original;
+            }
+            return selection.portrait;
+        }
+        if self.classification.panorama {
+            return selection.panorama;
+        }
+        if let Some(pick) = self.classification.burst {
+            return selection.burst && (pick || selection.burst_all);
+        }
+        if self.classification.screenshot {
+            return selection.screenshots;
+        }
+        if self.classification.slow_motion {
+            return selection.slow_motion;
+        }
+        if self.is_video() {
+            return selection.videos;
+        }
+        self.is_standard() && selection.standard
+    }
+}
+
+fn media_counts(media: &[Media], range: Range, keys: &HashSet<Key>) -> MediaCounts {
+    let mut counts = MediaCounts::default();
+    for file in media.iter().filter(|file| {
+        range.takes(local(file.taken()).date()) && !keys.contains(&key(file))
+    }) {
+        counts.add(file);
+    }
+    counts
+}
+
+fn fills_metadata(settings: MetadataSettings) -> bool {
+    matches!(
+        settings.location,
+        MetadataMode::FillMissing
+    ) || matches!(settings.camera, MetadataMode::FillMissing)
+        || matches!(settings.title, MetadataMode::FillMissing)
 }
 
 /// The phone we are on, and its camera roll. Choosing another phone, or this
@@ -174,6 +387,7 @@ pub struct Import {
     pub path: PathBuf,
     pub settings: Settings,
     pub media: Vec<Media>,
+    pub metadata: Vec<Media>,
     pub cancel: Arc<AtomicBool>,
 }
 
@@ -318,36 +532,52 @@ pub enum Takes {
     NoLiveVideos,
     Photos,
     Videos,
+    /// iPhone screenshots are saved as PNG; skip them to keep only camera photos.
+    NoScreenshots,
+    Selection(MediaSelection),
 }
 
 impl Takes {
     pub fn takes(&self, file: &Media) -> bool {
+        if file.classification.trashed {
+            return false;
+        }
         match self {
             Takes::Everything => true,
             Takes::NoLiveVideos => !file.is_live_video(),
             Takes::Photos => !file.is_video(),
             Takes::Videos => file.is_video() && !file.is_live_video(),
+            Takes::NoScreenshots => !file.is_screenshot(),
+            Takes::Selection(selection) => file.selected(*selection),
         }
     }
 
     /// How the folder writes it down, and how it reads it back.
-    pub fn stored(&self) -> &'static str {
+    pub fn stored(&self) -> String {
         match self {
-            Takes::Everything => "everything",
-            Takes::NoLiveVideos => "noLiveVideos",
-            Takes::Photos => "photos",
-            Takes::Videos => "videos",
+            Takes::Everything => "everything".into(),
+            Takes::NoLiveVideos => "noLiveVideos".into(),
+            Takes::Photos => "photos".into(),
+            Takes::Videos => "videos".into(),
+            Takes::NoScreenshots => "noScreenshots".into(),
+            Takes::Selection(selection) => serde_json::to_string(selection).unwrap_or_else(|_| "{}".into()),
         }
     }
 
     /// A folder that has never said, and one that says something we do not
     /// know, both take everything: that is what a new folder does.
-    pub fn read(stored: &str) -> Takes {
+    pub fn read(stored: impl AsRef<str>) -> Takes {
+        let stored = stored.as_ref();
+        if let Ok(selection) = serde_json::from_str(stored) {
+            return Takes::Selection(selection);
+        }
+
         [
             Takes::Everything,
             Takes::NoLiveVideos,
             Takes::Photos,
             Takes::Videos,
+            Takes::NoScreenshots,
         ]
         .into_iter()
         .find(|takes| takes.stored() == stored)
@@ -514,6 +744,8 @@ pub enum Run {
 #[serde(rename_all = "camelCase")]
 pub struct Report {
     pub imported: usize,
+    /// Existing files whose missing metadata was processed.
+    pub updated: usize,
     /// What was actually fetched, and how long it took to fetch it.
     pub bytes: u64,
     pub seconds: u64,
@@ -548,6 +780,8 @@ pub enum End {
 pub struct FolderFacts {
     /// Every file it has taken. Empty for a folder that is not a library.
     pub keys: HashSet<Key>,
+    /// Files whose missing metadata has already been filled.
+    pub metadata_keys: HashSet<Key>,
     /// When it last took anything, in seconds. None until it has.
     pub last: Option<i64>,
     /// Room an import may use on the disk the folder sits on.
@@ -563,6 +797,28 @@ pub struct FolderFacts {
 pub struct Settings {
     pub layout: String,
     pub takes: Takes,
+    pub metadata: MetadataSettings,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum MetadataMode {
+    Preserve,
+    FillMissing,
+}
+
+impl Default for MetadataMode {
+    fn default() -> Self {
+        Self::FillMissing
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MetadataSettings {
+    pub location: MetadataMode,
+    pub camera: MetadataMode,
+    pub title: MetadataMode,
 }
 
 /// What a new library starts with.
@@ -570,7 +826,8 @@ impl Default for Settings {
     fn default() -> Settings {
         Settings {
             layout: default_layout(),
-            takes: Takes::Everything,
+            takes: Takes::Selection(MediaSelection::default()),
+            metadata: MetadataSettings::default(),
         }
     }
 }
@@ -642,6 +899,7 @@ pub enum FolderView {
         layout: String,
         naming: String,
         takes: Takes,
+        metadata: MetadataSettings,
     },
 }
 
@@ -665,6 +923,12 @@ pub enum RollView {
         all: Batch,
         /// Those of them the folder has never taken.
         new: Batch,
+        /// Existing files whose metadata has not been enriched yet.
+        metadata: Batch,
+        /// Counts before the media checkboxes are applied.
+        kinds: MediaCounts,
+        new_kinds: MediaCounts,
+        support: MediaSupport,
     },
 }
 
@@ -803,11 +1067,6 @@ impl State {
             return Ok(None);
         };
 
-        // The files here were named with the layout the folder has.
-        if !facts.keys.is_empty() {
-            return Err("Files here are already named this way.");
-        }
-
         facts.settings.layout = layout;
         Ok(Some(path.clone()))
     }
@@ -824,6 +1083,24 @@ impl State {
         };
 
         facts.settings.takes = takes;
+        Some(path.clone())
+    }
+
+    pub fn set_media_options(&mut self, options: MediaSelection) -> Option<PathBuf> {
+        self.set_takes(Takes::Selection(options))
+    }
+
+    pub fn set_metadata_options(&mut self, metadata: MetadataSettings) -> Option<PathBuf> {
+        if !self.act() {
+            return None;
+        }
+
+        let Folder::Known { path, facts } = &mut self.folder else {
+            return None;
+        };
+
+        facts.settings.metadata = metadata;
+        facts.metadata_keys.clear();
         Some(path.clone())
     }
 
@@ -1112,7 +1389,7 @@ impl State {
 
         let (
             Some(Device::Ready { udid, .. }),
-            Some(Roll::Done { media }),
+            Some(Roll::Done { media, .. }),
             Folder::Known { path, facts },
         ) = (
             self.phone
@@ -1125,11 +1402,23 @@ impl State {
             return None;
         };
 
-        let media: Vec<Media> = new(media, facts.settings.takes, self.range, &facts.keys)
+        let all_media = media;
+        let media: Vec<Media> = new(all_media, facts.settings.takes, self.range, &facts.keys)
             .cloned()
             .collect();
+        let metadata = if fills_metadata(facts.settings.metadata) {
+            let none = HashSet::new();
+            new(all_media, facts.settings.takes, self.range, &none)
+                .filter(|file| {
+                    facts.keys.contains(&key(file)) && !facts.metadata_keys.contains(&key(file))
+                })
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
 
-        if media.is_empty() {
+        if media.is_empty() && metadata.is_empty() {
             return None;
         }
 
@@ -1139,6 +1428,7 @@ impl State {
             settings: facts.settings.clone(),
             cancel: Arc::new(AtomicBool::new(false)),
             media,
+            metadata,
         };
 
         // The phone imports into this folder from now on.
@@ -1148,9 +1438,14 @@ impl State {
         self.run = Some(Run::Copying {
             progress: Progress {
                 done: 0,
-                total: import.media.len(),
+                total: import.media.len() + import.metadata.len(),
                 bytes: 0,
-                total_bytes: import.media.iter().map(|file| file.size).sum(),
+                total_bytes: import
+                    .media
+                    .iter()
+                    .chain(&import.metadata)
+                    .map(|file| file.size)
+                    .sum(),
                 eta: None,
                 latest: None,
             },
@@ -1230,6 +1525,16 @@ impl State {
         }
     }
 
+    /// Dismiss a finished or stopped import report, going back to the ready state.
+    pub fn dismiss(&mut self) -> bool {
+        if matches!(self.run, Some(Run::Finished(_))) {
+            self.run = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Tell a running copy to stop after the chunk it is on.
     pub fn stop(&self) {
         if let Some(Run::Copying { cancel, .. }) = &self.run {
@@ -1255,9 +1560,9 @@ impl State {
 
         // Without a folder, everything the phone has is new.
         let none = HashSet::new();
-        let (takes, keys) = match self.folder.facts() {
-            Some(facts) => (facts.settings.takes, &facts.keys),
-            None => (Takes::Everything, &none),
+        let (takes, keys, metadata_keys) = match self.folder.facts() {
+            Some(facts) => (facts.settings.takes, &facts.keys, &facts.metadata_keys),
+            None => (Takes::Everything, &none, &none),
         };
 
         let roll = self
@@ -1275,10 +1580,40 @@ impl State {
                     latest: announced.last().cloned(),
                     failed: failed.clone(),
                 },
-                Roll::Done { media } => RollView::Done {
-                    all: Batch::of(new(media, takes, self.range, &HashSet::new())),
-                    new: Batch::of(new(media, takes, self.range, keys)),
-                },
+                Roll::Done { media, .. } => {
+                    let all = Batch::of(new(media, takes, self.range, &HashSet::new()));
+                    let fresh = Batch::of(new(media, takes, self.range, keys));
+                    let metadata = self
+                        .folder
+                        .facts()
+                        .filter(|facts| fills_metadata(facts.settings.metadata))
+                        .map(|_| {
+                            let none = HashSet::new();
+                            Batch::of(
+                                new(media, takes, self.range, &none)
+                                    .filter(|file| {
+                                        keys.contains(&key(file))
+                                            && !metadata_keys.contains(&key(file))
+                                    }),
+                            )
+                        })
+                        .unwrap_or_default();
+                    let kinds = media_counts(media, self.range, &HashSet::new());
+                    let new_kinds = media_counts(media, self.range, keys);
+                    let support = media
+                        .first()
+                        .map(|file| file.classification.support)
+                        .unwrap_or_default();
+
+                    RollView::Done {
+                        all,
+                        new: fresh,
+                        metadata,
+                        kinds,
+                        new_kinds,
+                        support,
+                    }
+                }
             });
 
         Flow {
@@ -1301,6 +1636,7 @@ impl State {
                     layout: facts.settings.layout.clone(),
                     naming: example(&facts.settings.layout),
                     takes: facts.settings.takes,
+                    metadata: facts.settings.metadata,
                 },
             },
             roll,
@@ -1324,6 +1660,8 @@ mod tests {
                 .unwrap()
                 .naive_utc(),
             still: live_video.then(chrono::NaiveDateTime::default),
+            classification: MediaClassification::default(),
+            metadata: MediaMetadata::default(),
         };
         let media = [
             file("/DCIM/100APPLE/IMG_0001.HEIC", false, 1),
@@ -1340,6 +1678,11 @@ mod tests {
                 bytes: 50,
                 videos: 1,
                 clips: 1,
+                kinds: MediaCounts {
+                    standard: 3,
+                    live_videos: 1,
+                    ..MediaCounts::default()
+                },
                 // The clip is newest of all, and is not a print.
                 newest: vec![
                     "/DCIM/100APPLE/IMG_0003.JPG".into(),
@@ -1493,9 +1836,11 @@ mod tests {
             size: 1,
             mtime: when("2026-09-02 15:04:11"),
             still: live_video.then(|| when("2026-09-02 15:04:11")),
+            classification: MediaClassification::default(),
+            metadata: MediaMetadata::default(),
         };
 
-        // A Live Photo (its still and its clip), a film, and a photo.
+        // A Live Photo (its still and its clip), a film, a photo, and a screenshot.
         read(
             &mut state,
             vec![
@@ -1503,14 +1848,16 @@ mod tests {
                 file("/DCIM/100APPLE/IMG_0001.MOV", true),
                 file("/DCIM/100APPLE/IMG_0002.MOV", false),
                 file("/DCIM/100APPLE/IMG_0003.HEIC", false),
+                file("/DCIM/100APPLE/IMG_0004.PNG", false),
             ],
         );
 
         for (takes, files) in [
-            (Takes::Everything, 4),
-            (Takes::NoLiveVideos, 3),
-            (Takes::Photos, 2),
+            (Takes::Everything, 5),
+            (Takes::NoLiveVideos, 4),
+            (Takes::Photos, 3),
             (Takes::Videos, 1),
+            (Takes::NoScreenshots, 4),
         ] {
             state.set_takes(takes);
             assert_eq!(fresh(&state).files, files);
@@ -1772,7 +2119,7 @@ mod tests {
         assert!(matches!(state.view().roll, Some(RollView::Done { .. })));
         assert!(state.range == Range::Everything);
         let settings = &state.folder.facts().expect("the folder is open").settings;
-        assert!(matches!(settings.takes, Takes::Everything));
+        assert!(matches!(settings.takes, Takes::Selection(_)));
         assert_eq!(settings.layout, default_layout());
     }
 
@@ -2295,10 +2642,9 @@ mod tests {
         assert!(matches!(&state.folder, Folder::Opening(path) if path == Path::new("/tmp/y")));
     }
 
-    /// The files already in the folder were named with its layout; a new one
-    /// would name what comes next another way.
+    /// A folder can change its naming layout after an import.
     #[test]
-    fn a_layout_is_refused_once_the_folder_has_keys() {
+    fn a_layout_can_change_after_the_folder_has_keys() {
         let mut state = State::new();
         open(&mut state, folder(HashSet::new()));
         assert_eq!(
@@ -2313,7 +2659,7 @@ mod tests {
         );
         assert_eq!(
             state.set_layout("{mtime:%Y}/{name}".into()),
-            Err("Files here are already named this way.")
+            Ok(Some("/tmp/x".into()))
         );
         assert!(matches!(
             state.view().folder,
@@ -2324,7 +2670,7 @@ mod tests {
                 .folder
                 .facts()
                 .map(|facts| facts.settings.layout.clone()),
-            Some(default_layout())
+            Some("{mtime:%Y}/{name}".into())
         );
     }
 
@@ -2363,6 +2709,8 @@ mod tests {
             size,
             mtime: when("2026-09-02 15:04:11"),
             still: None,
+            classification: MediaClassification::default(),
+            metadata: MediaMetadata::default(),
         }
     }
 
@@ -2370,6 +2718,7 @@ mod tests {
     fn folder(keys: HashSet<Key>) -> FolderFacts {
         FolderFacts {
             keys,
+            metadata_keys: HashSet::new(),
             last: None,
             free: u64::MAX,
             network: false,
