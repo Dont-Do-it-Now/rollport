@@ -27,6 +27,13 @@
 </p>
 
 <p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/rollport-dark.webp">
+    <img src="docs/rollport.webp" width="544" alt="가져오기 진행과 완료 결과를 보여 주는 Rollport 화면">
+  </picture>
+</p>
+
+<p align="center">
   <img src="docs/rollport-options.webp" width="320" alt="미디어 유형과 메타데이터 옵션을 보여 주는 Rollport 화면">
 </p>
 
