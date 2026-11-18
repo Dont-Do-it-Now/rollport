@@ -3,7 +3,7 @@
 # the files on a draft release of that tag. Publish the draft by hand once the
 # files are checked.
 # The files are named without the version (Rollport.dmg, Rollport-setup.exe),
-# so https://github.com/artificiadrian/rollport/releases/latest/download/<file>
+# so https://github.com/Dont-Do-it-Now/rollport/releases/latest/download/<file>
 # always gives the newest release's file, and the site links to that.
 name: Release
 
