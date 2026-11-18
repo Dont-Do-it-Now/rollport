@@ -283,8 +283,7 @@ impl Media {
 
     /// iPhone screenshots are always saved as PNG.
     pub fn is_screenshot(&self) -> bool {
-        self.classification.screenshot
-            || matches!(extension(&self.path).as_deref(), Some("png"))
+        self.classification.screenshot || matches!(extension(&self.path).as_deref(), Some("png"))
     }
 
     pub fn is_standard(&self) -> bool {
@@ -340,19 +339,18 @@ impl Media {
 
 fn media_counts(media: &[Media], range: Range, keys: &HashSet<Key>) -> MediaCounts {
     let mut counts = MediaCounts::default();
-    for file in media.iter().filter(|file| {
-        range.takes(local(file.taken()).date()) && !keys.contains(&key(file))
-    }) {
+    for file in media
+        .iter()
+        .filter(|file| range.takes(local(file.taken()).date()) && !keys.contains(&key(file)))
+    {
         counts.add(file);
     }
     counts
 }
 
 fn fills_metadata(settings: MetadataSettings) -> bool {
-    matches!(
-        settings.location,
-        MetadataMode::FillMissing
-    ) || matches!(settings.camera, MetadataMode::FillMissing)
+    matches!(settings.location, MetadataMode::FillMissing)
+        || matches!(settings.camera, MetadataMode::FillMissing)
         || matches!(settings.title, MetadataMode::FillMissing)
 }
 
@@ -560,7 +558,9 @@ impl Takes {
             Takes::Photos => "photos".into(),
             Takes::Videos => "videos".into(),
             Takes::NoScreenshots => "noScreenshots".into(),
-            Takes::Selection(selection) => serde_json::to_string(selection).unwrap_or_else(|_| "{}".into()),
+            Takes::Selection(selection) => {
+                serde_json::to_string(selection).unwrap_or_else(|_| "{}".into())
+            }
         }
     }
 
@@ -1589,13 +1589,9 @@ impl State {
                         .filter(|facts| fills_metadata(facts.settings.metadata))
                         .map(|_| {
                             let none = HashSet::new();
-                            Batch::of(
-                                new(media, takes, self.range, &none)
-                                    .filter(|file| {
-                                        keys.contains(&key(file))
-                                            && !metadata_keys.contains(&key(file))
-                                    }),
-                            )
+                            Batch::of(new(media, takes, self.range, &none).filter(|file| {
+                                keys.contains(&key(file)) && !metadata_keys.contains(&key(file))
+                            }))
                         })
                         .unwrap_or_default();
                     let kinds = media_counts(media, self.range, &HashSet::new());

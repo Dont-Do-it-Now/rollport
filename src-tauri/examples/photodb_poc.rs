@@ -59,9 +59,19 @@ async fn main() -> Res<()> {
         &db,
         "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('ZASSET','ZGENERICASSET')",
     )?;
-    let table = tables.first().ok_or("no ZASSET / ZGENERICASSET table")?.clone();
-    let columns: Vec<String> = strings(&db, &format!("SELECT name FROM pragma_table_info('{table}')"))?;
-    println!("\n== {table}: {} columns ==\n{}", columns.len(), columns.join(", "));
+    let table = tables
+        .first()
+        .ok_or("no ZASSET / ZGENERICASSET table")?
+        .clone();
+    let columns: Vec<String> = strings(
+        &db,
+        &format!("SELECT name FROM pragma_table_info('{table}')"),
+    )?;
+    println!(
+        "\n== {table}: {} columns ==\n{}",
+        columns.len(),
+        columns.join(", ")
+    );
     let has = |c: &str| columns.iter().any(|x| x == c);
 
     let interesting = [
@@ -109,7 +119,11 @@ async fn main() -> Res<()> {
             "SELECT ZKIND, ZKINDSUBTYPE, COUNT(*) FROM {table} GROUP BY 1, 2 ORDER BY 1, 2"
         ))?;
         for row in stmt.query_map([], |r| {
-            Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, i64>(2)?))
+            Ok((
+                r.get::<_, Option<i64>>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
         })? {
             println!("{:?}", row?);
         }
@@ -148,7 +162,9 @@ async fn main() -> Res<()> {
     }
     let rows: Vec<String> = strings(
         &db,
-        &format!("SELECT UPPER(ZDIRECTORY || '/' || ZFILENAME) FROM {table} WHERE ZDIRECTORY LIKE 'DCIM/%'"),
+        &format!(
+            "SELECT UPPER(ZDIRECTORY || '/' || ZFILENAME) FROM {table} WHERE ZDIRECTORY LIKE 'DCIM/%'"
+        ),
     )?;
     let in_db: HashSet<_> = rows.iter().cloned().collect();
     let only_db = rows.iter().filter(|p| !dcim.contains(*p)).count();
@@ -186,7 +202,10 @@ async fn main() -> Res<()> {
             }
         }
     }
-    println!("\n== /PhotoData/Mutations ==\n{:?}", afc.list_dir("/PhotoData/Mutations").await);
+    println!(
+        "\n== /PhotoData/Mutations ==\n{:?}",
+        afc.list_dir("/PhotoData/Mutations").await
+    );
 
     Ok(())
 }

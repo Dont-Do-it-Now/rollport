@@ -5,8 +5,8 @@ mod state;
 use std::{
     collections::HashMap,
     fs,
-    path::{Path, PathBuf},
     panic::PanicHookInfo,
+    path::{Path, PathBuf},
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
@@ -18,8 +18,8 @@ use tauri::{
 use library::{Library, read_folder};
 use phone::{copy_all, walk, watch};
 use state::{
-    End, Flow, Folder, FolderFacts, Import, MediaSelection, MetadataSettings, Next, Range,
-    Reading, Report, Roll, State, Takes,
+    End, Flow, Folder, FolderFacts, Import, MediaSelection, MetadataSettings, Next, Range, Reading,
+    Report, Roll, State, Takes,
 };
 
 trait Context<T> {
@@ -279,9 +279,7 @@ async fn start_import(app: AppHandle) {
     // copying for ever, everything is refused, and Stop reaches nothing.
     let run = guarded(spawn({
         let (app, path, udid) = (app.clone(), path.clone(), udid.clone());
-        async move {
-            copy_all(&app, &udid, &path, media, metadata, settings, &cancel).await
-        }
+        async move { copy_all(&app, &udid, &path, media, metadata, settings, &cancel).await }
     }))
     .await;
 
@@ -564,10 +562,7 @@ async fn set_metadata_options(metadata: MetadataSettings, app: AppHandle) {
     write_settings(&app, changed.clone()).await;
 
     if let Some(path) = changed {
-        let _ = spawn_blocking(move || {
-            Library::open(&path)?.clear_metadata_progress()
-        })
-        .await;
+        let _ = spawn_blocking(move || Library::open(&path)?.clear_metadata_progress()).await;
     }
 }
 
