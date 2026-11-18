@@ -3,6 +3,7 @@ import HelpSection from "../../components/HelpSection.astro"
 import Kbd from "../../components/Kbd.astro"
 import Keys from "../../components/Keys.astro"
 import Help from "../../layouts/Help.astro"
+import { url } from "../../site"
 
 // The keyboard shortcuts, in the table under "keys": what each does first.
 const shortcuts = [
@@ -33,7 +34,7 @@ const shortcuts = [
 
     <HelpSection
         id="options"
-        screen="options"
+        image={url("/rollport-options.webp")}
         alt="Rollport with Options open: date taken, media types, and file names"
     >
         <p>
@@ -52,12 +53,18 @@ const shortcuts = [
                 photos behind.
             </li>
             <li>
-                <b>Media types</b>: <b>All media</b>,{" "}
-                <b>No Live Photo videos</b> (the short clip that goes with each
-                Live Photo), <b>Photos only</b>, or <b>Videos only</b>. Photos
-                only leaves out every video, Live Photo clips too. Videos only
-                leaves out the Live Photo clips. This choice is saved with the
-                folder, and you can change it at any time.
+                <b>Media types</b>: choose standard photos, Live Photos,
+                portrait photos, panoramas, bursts, screenshots, videos, and
+                slow-motion videos. You can include Live Photo videos, portrait
+                originals, and all burst frames separately. Check or uncheck any
+                combination; this choice is saved with the folder, and you can
+                change it at any time.
+            </li>
+            <li>
+                <b>Metadata</b>: <b>Fill missing</b> adds location,
+                camera/lens, and title/description values from the iPhone
+                library. <b>Keep existing</b> leaves the file as it is.
+                Existing metadata is never deleted.
             </li>
             <li>
                 <b>File names</b>: saved with the folder, and set for good at
@@ -93,9 +100,9 @@ const shortcuts = [
             </li>
         </ul>
         <p>
-            After the first import, the folder keeps that naming, so all its
-            files are named the same way. Options then shows the naming with a
-            lock.
+            The folder keeps the selected naming layout for future imports, but
+            you can change it later. Existing files are not renamed when the
+            layout changes.
         </p>
         <p>
             The date in a name is when the photo was taken, in this computer's
@@ -199,10 +206,12 @@ const shortcuts = [
         <p>
             The folder records what it already has in{" "}
             <code>rollport-library.db</code>. Do not delete this file. While it
-            is there, you can move and rename the photos in the folder. Without
-            it, Rollport recognizes a file only if it has the same size and date
-            and is still where the default naming (date and time in the name)
-            would put it. It copies everything else again.
+            is there, you can move and rename the photos in the folder. Rollport
+            also checks the actual folder contents, so a file that is already
+            present is not imported again just because the database is behind.
+            Without the database, Rollport recognizes a file only if it has the
+            same size and date and is still where the default naming (date and
+            time in the name) would put it. It copies everything else again.
         </p>
         <p>
             Rollport never deletes anything on the iPhone. To free up space

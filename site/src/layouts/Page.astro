@@ -22,7 +22,7 @@ const path = Astro.url.pathname
 const canonical = new URL(path, site.origin).href
 const ogImage = new URL(url("/og.png"), site.origin).href
 // The image says the home page sentence; so does its description.
-const ogAlt = `The Rollport window with 312 new photos and videos ready to import, next to what Rollport does: ${sentence.charAt(0).toLowerCase()}${sentence.slice(1)}`
+const ogAlt = `The Rollport window with photos and videos ready to import, next to what Rollport does: ${sentence.charAt(0).toLowerCase()}${sentence.slice(1)}`
 ---
 
 <!doctype html>

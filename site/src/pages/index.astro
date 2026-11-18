@@ -71,6 +71,18 @@ const firstPhoto = "sunset.svg"
                 <p class="mt-8 max-w-md shrink-0 text-xl text-balance short:mt-4">
                     {sentence}
                 </p>
+                <div
+                    class="mt-4 flex max-w-xl flex-wrap justify-center gap-x-4 gap-y-2 text-sm text-muted short:mt-2"
+                    aria-label="Rollport features"
+                >
+                    {[
+                        "Photos and videos",
+                        "Media type filters",
+                        "Date ranges",
+                        "Folder and filename control",
+                        "Fill missing metadata",
+                    ].map((feature) => <span>{feature}</span>)}
+                </div>
             </div>
             <div class="shrink-0 pt-2 pb-8 short:pb-4">
                 <!-- One button to the download page, which puts your system

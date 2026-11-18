@@ -8,45 +8,83 @@
 <h1 align="center">Rollport</h1>
 
 <p align="center">
-  Copy new photos and videos from your iPhone to a folder on your computer, over USB.<br>
-  Nothing on the phone is deleted.
+  Import photos and videos from your iPhone over USB, choose what to copy and where it goes,<br>
+  fill missing metadata, and never delete anything from the phone.
 </p>
 
 <p align="center">
-  <a href="https://artificiadrian.github.io/rollport/">Website</a>
+  <a href="https://dont-do-it-now.github.io/rollport/">Website</a>
   &nbsp;&nbsp;
-  <a href="https://artificiadrian.github.io/rollport/download">Download</a>
+  <a href="https://dont-do-it-now.github.io/rollport/download">Download</a>
   &nbsp;&nbsp;
-  <a href="https://artificiadrian.github.io/rollport/help">Help</a>
+  <a href="https://dont-do-it-now.github.io/rollport/help">Help</a>
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/rollport-dark.webp">
-    <img src="docs/rollport.webp" width="544" alt="The Rollport window: 312 new photos and videos, an import that deals them onto a fan of prints, and the report when it is done">
-  </picture>
+  <img src="docs/rollport-options.webp" width="320" alt="Rollport options showing media type and metadata controls">
 </p>
 
 ## Features
 
 - Copies only new photos and videos, even after you delete or move old ones
-- Original files: HEIC, ProRAW, Live Photos, video, GIFs and camera RAW, never converted
-- Sorted by date: dated file names, year and month folders, or a pattern of your own
-- Choose a date range, and leave out videos, photos or Live Photo videos
-- Stop at any time and continue later; unplugging during an import loses nothing
+- Preserves original files such as HEIC, ProRAW, Live Photos, video, GIFs, and camera RAW without conversion
+- Sorts files by date using dated filenames, year/month folders, or a custom pattern
+- Imports both images and videos directly from the iPhone over USB
+- Classifies standard photos, Live Photos, portrait photos, panoramas, bursts, screenshots, videos, and slow-motion videos
+- Includes optional Live Photo videos, portrait originals, and all burst frames
+- Selects an exact date range, leaves out selected media types, and shows counts for every supported media type
+- Chooses the destination folder and a custom filename layout, including date-based subfolders
+- Reconciles the SQLite library with the actual destination folder before deciding what is new
+- Fills missing location, camera/lens, and title/description metadata from the iPhone library
+- Never deletes existing destination metadata or anything from the iPhone
+- Stops at any time and continues later; unplugging during an import loses nothing
 - Remembers each iPhone's folder; drop a folder on the window to switch
+- Shows import failures and records unexpected exits for the next launch
 - Keyboard: <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> imports, <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>.</kbd> stops,
   <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>+</kbd>/<kbd>−</kbd>/<kbd>0</kbd> zooms, <kbd>⌘</kbd><kbd>?</kbd> or <kbd>F1</kbd> opens help
 - Windows, macOS and Linux
 - Free and open source, no account, works offline
 
-See the [help](https://artificiadrian.github.io/rollport/help) for everything
+See the [help](https://dont-do-it-now.github.io/rollport/help) for everything
 Rollport does.
+
+## Feature details
+
+### Media classification
+
+Rollport reads the iPhone's media library and the files exposed over USB, then
+matches them before counting or importing. This lets it distinguish standard
+photos, Live Photos and their video components, portrait photos and originals,
+panoramas, bursts and their frames, screenshots, videos, and slow-motion
+videos. The date filter and type checkboxes are applied to both images and
+videos.
+
+### Destination and filenames
+
+Choose any writable local or network folder, then select a built-in filename
+layout or enter a pattern of your own. Rollport compares the library database
+with the files physically present in that folder, so an existing file is not
+copied again just because the database is out of date. Changing the layout
+affects future imports; existing files are not renamed.
+
+### Metadata enrichment
+
+When enabled, Rollport fills missing location, camera and lens, and
+title/description values from the iPhone library. Existing values are kept,
+and there is no metadata deletion option. The bundled ExifTool utility is used
+for file updates and is licensed separately from Rollport.
+
+### Safe imports
+
+Imports can be stopped and continued later. Files already copied remain in the
+destination, the iPhone is never modified, and failures are reported without
+discarding the rest of the import. If the application exits unexpectedly, the
+next launch shows the recorded error details.
 
 ## Download
 
 Get the newest version from the
-[download page](https://artificiadrian.github.io/rollport/download), or pick a
+[download page](https://dont-do-it-now.github.io/rollport/download), or pick a
 file here:
 
 | Windows                  | macOS      | Linux                |
@@ -55,15 +93,15 @@ file here:
 | [Portable][portable.exe] |            | [DEB][deb]           |
 |                          |            | [RPM][rpm]           |
 
-[setup.exe]: https://github.com/artificiadrian/rollport/releases/latest/download/Rollport-setup.exe
-[portable.exe]: https://github.com/artificiadrian/rollport/releases/latest/download/Rollport.exe
-[dmg]: https://github.com/artificiadrian/rollport/releases/latest/download/Rollport.dmg
-[appimage]: https://github.com/artificiadrian/rollport/releases/latest/download/Rollport.AppImage
-[deb]: https://github.com/artificiadrian/rollport/releases/latest/download/Rollport.deb
-[rpm]: https://github.com/artificiadrian/rollport/releases/latest/download/Rollport.rpm
+[setup.exe]: https://github.com/Dont-Do-it-Now/rollport/releases/latest/download/Rollport-setup.exe
+[portable.exe]: https://github.com/Dont-Do-it-Now/rollport/releases/latest/download/Rollport.exe
+[dmg]: https://github.com/Dont-Do-it-Now/rollport/releases/latest/download/Rollport.dmg
+[appimage]: https://github.com/Dont-Do-it-Now/rollport/releases/latest/download/Rollport.AppImage
+[deb]: https://github.com/Dont-Do-it-Now/rollport/releases/latest/download/Rollport.deb
+[rpm]: https://github.com/Dont-Do-it-Now/rollport/releases/latest/download/Rollport.rpm
 
 Older versions are on the
-[releases page](https://github.com/artificiadrian/rollport/releases).
+[releases page](https://github.com/Dont-Do-it-Now/rollport/releases).
 
 - macOS: one DMG for Apple silicon and Intel. The app isn't notarized, so
   macOS blocks it the first time. Allow it in
@@ -75,12 +113,17 @@ Older versions are on the
   Make the AppImage runnable first: `chmod +x Rollport.AppImage`.
 
 The iPhone has to be unlocked. The first time you connect it, tap Trust on the
-phone. Trust only your own computer, or one you know. [Get started](https://artificiadrian.github.io/rollport/help/getting-started)
+phone. Trust only your own computer, or one you know. [Get started](https://dont-do-it-now.github.io/rollport/help/getting-started)
 has every step for each system.
 
 Rollport imports what is on the iPhone. With Optimize iPhone Storage on, many
 originals are only in iCloud;
-[download them to the iPhone first](https://artificiadrian.github.io/rollport/help/troubleshooting#icloud).
+[download them to the iPhone first](https://dont-do-it-now.github.io/rollport/help/troubleshooting#icloud).
+
+Metadata enrichment uses the bundled ExifTool utility. It only fills missing
+values and never removes metadata that is already present. ExifTool is a
+separate third-party component; see its notice and license files under
+`src-tauri/resources/exiftool/`.
 
 ## Environment variables
 
@@ -94,13 +137,13 @@ wins.
 | `APPIMAGE`                                                          | Linux: set by the AppImage. Rollport then changes screens without animation, because the AppImage's older WebKitGTK crashes on it.                                               |
 | `USBMUXD_SOCKET_ADDRESS`                                            | Where usbmuxd listens: a socket path or `host:port`. The default is `/var/run/usbmuxd`, or `127.0.0.1:27015` on Windows.                                                         |
 
-## Why I made this
+## Origin
 
-The Windows Photos app kept crashing when I imported from my iPhone, and I
-never liked using it anyway. I looked for something else and found nothing
-that worked the same on Windows, macOS and Linux. So I wrote
-[dcimport](https://github.com/artificiadrian/dcimport), a command-line tool,
-and then Rollport: the same idea, as an app anyone can use.
+Rollport is based on the original open-source project by
+[artificiadrian](https://github.com/artificiadrian/rollport). This fork keeps
+the original USB import flow and adds media classification, physical-folder
+reconciliation, destination naming controls, metadata enrichment, and crash
+reporting.
 
 ## Building
 
@@ -116,9 +159,15 @@ pnpm tauri dev
 `pnpm tauri build` builds the installer. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the rest.
 
+On Windows, `deploy.bat` builds the release executable and launches it after a
+successful build.
+
 ## Licence
 
-MIT
+Rollport source code is available under the MIT License. The original
+copyright notice is retained in [LICENSE](LICENSE). ExifTool is bundled as a
+separate utility under its own GPL or Perl Artistic License; Rollport's MIT
+license does not apply to it.
 
 ---
 

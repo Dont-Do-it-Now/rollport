@@ -10,10 +10,12 @@ interface Props {
     /** A troubleshooting question: its answer opens in place. */
     question?: boolean
     screen?: "trust" | "folder" | "ready" | "options" | "importing" | "done"
+    /** A real product screenshot, when the section needs a current UI state. */
+    image?: string
     /** What the picture shows, for screen readers. */
     alt?: string
 }
-const { id, question, screen, alt } = Astro.props
+const { id, question, screen, image, alt } = Astro.props
 const title = sectionTitle(id)
 ---
 
@@ -47,13 +49,17 @@ const title = sectionTitle(id)
         <div class="prose mt-3">
             <slot />
         </div>
-        {screen && (
+        {(image || screen) && (
             <figure class="mt-6 flex justify-center rounded-xl bg-subtle px-6 py-8">
-                <Window
-                    class="w-full max-w-shot"
-                    screen={screen}
-                    title={alt ?? title}
-                />
+                {image ? (
+                    <img class="h-auto w-full max-w-xs" src={image} alt={alt ?? title} />
+                ) : (
+                    <Window
+                        class="w-full max-w-shot"
+                        screen={screen!}
+                        title={alt ?? title}
+                    />
+                )}
             </figure>
         )}
     </section>
