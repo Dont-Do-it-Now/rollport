@@ -154,6 +154,22 @@
         tell("start_import")
     }
 
+    let continueNotice = $state("")
+    let continueNoticeTimer: ReturnType<typeof setTimeout> | undefined
+
+    function continueImport() {
+        if (view.next === "later") {
+            continueNotice = "Connect the iPhone again to continue."
+            if (continueNoticeTimer) clearTimeout(continueNoticeTimer)
+            continueNoticeTimer = setTimeout(() => {
+                continueNotice = ""
+            }, 3000)
+            return
+        }
+
+        start()
+    }
+
     function shortcut(event: KeyboardEvent) {
         // An open menu takes Esc first and marks it handled; it closes alone.
         if (event.key === "Escape" && !event.defaultPrevented) options = false
@@ -636,7 +652,8 @@
                 {#if view.screen === "ready"}
                     <p class={hero}>{count(Math.round(files.current))}</p>
                     <p class="mt-2 text-lg font-medium">
-                        {size(bytes.current)} {view.metadataOnly ? "to update" : "to import"}
+                        {size(bytes.current)}
+                        {view.metadataOnly ? "to update" : "to import"}
                     </p>
                     {#key view.details}
                         <p
@@ -660,7 +677,9 @@
                             strokeWidth={2}
                             aria-hidden="true"
                         />
-                        {view.metadataOnly ? "Update metadata" : `Import ${count(view.files)}`}
+                        {view.metadataOnly
+                            ? "Update metadata"
+                            : `Import ${count(view.files)}`}
                     </Button>
                 {:else if view.screen === "counting"}
                     <p class="{hero} text-muted">{view.count}</p>
@@ -716,13 +735,16 @@
                         >
                     {/if}
                     <div class="mt-6 flex w-full flex-col items-stretch gap-2">
-                        <div class="flex items-center gap-2">
+                        <div class="flex w-full items-center gap-2">
                             {#if view.next === "continue" || view.next === "later"}
                                 <Button
                                     variant="main"
-                                    onclick={start}
-                                    disabled={view.next === "later"}
-                                    class="disabled:opacity-50"
+                                    onclick={continueImport}
+                                    aria-disabled={view.next === "later"}
+                                    class="flex-1 justify-center {view.next ===
+                                    'later'
+                                        ? 'opacity-50'
+                                        : ''}"
                                     title={`${again ? "Import again" : "Import what is left"} (${shownEnter})`}
                                     aria-keyshortcuts={enter}
                                 >
@@ -746,6 +768,16 @@
                             {/if}
                             {@render reveal()}
                         </div>
+                        {#if continueNotice}
+                            <p
+                                class="text-sm text-muted"
+                                role="status"
+                                aria-live="polite"
+                                in:fade={{ duration: 150 }}
+                            >
+                                {continueNotice}
+                            </p>
+                        {/if}
                         {#if view.next === "continue" || view.next === "later"}
                             <Button
                                 variant="secondary"
@@ -801,7 +833,11 @@
 <!-- The folder in the system's file browser: on every report and on Up to
      date. -->
 {#snippet reveal()}
-    <Button variant="secondary" onclick={() => tell("reveal_destination")}>
+    <Button
+        variant="secondary"
+        onclick={() => tell("reveal_destination")}
+        class="flex-1 justify-center"
+    >
         <FolderOpen size={14} aria-hidden="true" />
         {mac
             ? "Show in Finder"
@@ -880,7 +916,9 @@
             {folder}
             range={flow.range}
             counts={flow.roll?.roll === "done" ? flow.roll.kinds : EMPTY_COUNTS}
-            support={flow.roll?.roll === "done" ? flow.roll.support : EMPTY_SUPPORT}
+            support={flow.roll?.roll === "done"
+                ? flow.roll.support
+                : EMPTY_SUPPORT}
         />
     </div>
 {/if}
