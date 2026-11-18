@@ -842,10 +842,78 @@ const ATTEMPTS: u32 = 3;
 const BACKOFF: Duration = Duration::from_millis(250);
 const METADATA_PROGRESS_BATCH: usize = 100;
 
-/// ExifTool processes run side by side. Two, not four: each rewrites the
-/// whole file in place, and on a network drive more than that brings back
-/// disk I/O errors.
-const EXIFTOOLS: usize = 2;
+/// ExifTool processes run side by side, one per worker. They rewrite files in
+/// the local staging folder, never on the destination: on a network drive
+/// that rewrite was the whole file read back and sent again.
+const EXIFTOOLS: usize = WORKERS;
+
+/// Where a copy's time goes, summed over the workers, in microseconds.
+/// Appended to rollport-timing.log in the temp folder every TIMING_EVERY
+/// files and when the run ends.
+#[derive(Default)]
+struct Timing {
+    fetched: AtomicU64,
+    check: AtomicU64,
+    room: AtomicU64,
+    open: AtomicU64,
+    read: AtomicU64,
+    write: AtomicU64,
+    close: AtomicU64,
+    exif_wait: AtomicU64,
+    exif: AtomicU64,
+    stage: AtomicU64,
+    publish: AtomicU64,
+    record: AtomicU64,
+}
+
+const TIMING_EVERY: usize = 200;
+
+impl Timing {
+    /// Adds the time since `since` to `slot`, and returns now for the next.
+    fn add(slot: &AtomicU64, since: Instant) -> Instant {
+        let now = Instant::now();
+        slot.fetch_add((now - since).as_micros() as u64, Ordering::Relaxed);
+        now
+    }
+
+    fn log(&self, destination: &Path, done: usize, streamed: u64, elapsed: Duration) {
+        let ms = |slot: &AtomicU64, over: u64| {
+            slot.load(Ordering::Relaxed) as f64 / 1000.0 / over.max(1) as f64
+        };
+        let fetched = self.fetched.load(Ordering::Relaxed);
+        let all = done as u64;
+        let seconds = elapsed.as_secs_f64().max(0.001);
+        let line = format!(
+            "[{}] {} | done={done} fetched={fetched} wall={seconds:.1}s {:.1}MB/s {:.0}ms/file \
+             | per file (ms, summed over {WORKERS} workers): check={:.0} record={:.0} \
+             | per fetched file: room={:.0} open={:.0} read={:.0} write={:.0} close={:.0} \
+             exif_wait={:.0} exif={:.0} stage={:.0} publish={:.0}\n",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default(),
+            destination.display(),
+            streamed as f64 / 1e6 / seconds,
+            seconds * 1000.0 / all.max(1) as f64,
+            ms(&self.check, all),
+            ms(&self.record, all),
+            ms(&self.room, fetched),
+            ms(&self.open, fetched),
+            ms(&self.read, fetched),
+            ms(&self.write, fetched),
+            ms(&self.close, fetched),
+            ms(&self.exif_wait, fetched),
+            ms(&self.exif, fetched),
+            ms(&self.stage, fetched),
+            ms(&self.publish, fetched),
+        );
+        let _ = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(std::env::temp_dir().join("rollport-timing.log"))
+            .and_then(|mut log| log.write_all(line.as_bytes()));
+    }
+}
 
 #[derive(Clone)]
 struct MetadataWriter {
@@ -894,11 +962,13 @@ impl MetadataWriter {
         path: &Path,
         metadata: &MediaMetadata,
         settings: MetadataSettings,
+        timing: Arc<Timing>,
     ) -> Result<(), String> {
         let path = path.to_path_buf();
         let metadata = metadata.clone();
         let (tools, next) = (self.tools.clone(), self.next.clone());
         tokio::task::spawn_blocking(move || {
+            let waited = Instant::now();
             // A free process first; if all are busy, wait on the next in turn.
             let mut tool = tools
                 .iter()
@@ -908,7 +978,10 @@ impl MetadataWriter {
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                 });
-            tool.apply(&path, &metadata, settings)
+            let started = Timing::add(&timing.exif_wait, waited);
+            let applied = tool.apply(&path, &metadata, settings);
+            Timing::add(&timing.exif, started);
+            applied
         })
         .await
         .doing("ExifTool stopped unexpectedly")?
@@ -1168,6 +1241,7 @@ pub async fn copy_all(
     let mut full = false;
     let mut metadata_done = Vec::new();
 
+    let timing = Arc::new(Timing::default());
     let cursor = Arc::new(AtomicUsize::new(0));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut pool = tokio::task::JoinSet::new();
@@ -1187,6 +1261,7 @@ pub async fn copy_all(
             held.clone(),
             metadata.clone(),
         );
+        let timing = timing.clone();
         let (udid, destination, layout) =
             (udid.to_string(), destination.to_path_buf(), layout.clone());
 
@@ -1231,6 +1306,7 @@ pub async fn copy_all(
                         metadata.as_deref(),
                         metadata_settings,
                         index < metadata_count,
+                        &timing,
                     )
                     .await;
 
@@ -1271,6 +1347,7 @@ pub async fn copy_all(
         done += 1;
         bytes += file.size;
 
+        let recording = Instant::now();
         let recorded = match outcome {
             Ok(Copied::Fetched) => {
                 if index < metadata_count {
@@ -1314,6 +1391,16 @@ pub async fn copy_all(
                 Ok(())
             }
         };
+        Timing::add(&timing.record, recording);
+
+        if done % TIMING_EVERY == 0 {
+            timing.log(
+                destination,
+                done,
+                streamed.load(Ordering::Relaxed),
+                started.elapsed(),
+            );
+        }
 
         if let Err(reason) = recorded {
             cancel.store(true, Ordering::Relaxed);
@@ -1391,6 +1478,13 @@ pub async fn copy_all(
     {
         fatal.get_or_insert(reason);
     }
+
+    timing.log(
+        destination,
+        done,
+        streamed.load(Ordering::Relaxed),
+        started.elapsed(),
+    );
 
     let end = ending(fatal, full, cancel.load(Ordering::Relaxed));
     let trouble = lost.trouble();
@@ -1619,7 +1713,9 @@ async fn copy(
     metadata_writer: Option<&MetadataWriter>,
     metadata_settings: MetadataSettings,
     metadata_existing: bool,
+    timing: &Arc<Timing>,
 ) -> Result<Copied, Failed> {
+    let mut at = Instant::now();
     let name = name_of(&file.path);
     let rendered = render(layout, name, local(file.taken()));
 
@@ -1655,8 +1751,10 @@ async fn copy(
     {
         // Already in the folder: skipped as it is. Metadata is written only
         // on a fresh copy, so a resumed run does not re-touch every file.
+        Timing::add(&timing.check, at);
         return Ok(Copied::Already);
     }
+    at = Timing::add(&timing.check, at);
 
     // Room for this file beside the ones still arriving, held until it is
     // whole or gone. While they arrive it waits for them: what they land is
@@ -1674,6 +1772,8 @@ async fn copy(
             Err(_) => return Err(Failed::Full),
         }
     };
+    at = Timing::add(&timing.room, at);
+    timing.fetched.fetch_add(1, Ordering::Relaxed);
 
     // One file, one scratch name. Four workers can render one final name — the
     // {name} layout gives IMG_0001.HEIC to a shot in every folder on the phone —
@@ -1698,12 +1798,29 @@ async fn copy(
 
     let mut clean = Partial(Some(&partial));
 
+    // A file that gets metadata is fetched and rewritten on this computer's
+    // own disk, then crosses to the folder once. ExifTool rewrites a file in
+    // place, and in the folder, on a network drive, that is the whole file
+    // read back and sent again.
+    let metadata_writer = metadata_writer.filter(|_| metadata_needed(file, metadata_settings));
+    let staged = match metadata_writer {
+        Some(_) => {
+            let staging = std::env::temp_dir().join("rollport");
+            fs::create_dir_all(&staging).on_disk("cannot make the staging folder")?;
+            Some(staging.join(scratch_name(&file.path)))
+        }
+        None => None,
+    };
+    let _clean_staged = Partial(staged.as_deref());
+    let fetched_to = staged.as_deref().unwrap_or(&partial);
+
     let mut handle = within(
         "cannot open the file on the iPhone",
         afc.open(&*file.path, AfcFopenMode::RdOnly),
     )
     .await
     .map_err(Failed::File)?;
+    Timing::add(&timing.open, at);
 
     // Every way out of the read closes the handle. idevice asserts when a file
     // descriptor is dropped unclosed, so a `?` straight out of the loop is a
@@ -1711,9 +1828,10 @@ async fn copy(
     // ship — and either way a file that is never reported, which is how a run
     // that ran out of disk finished saying nothing went wrong.
     let read: Result<u64, Failed> = async {
-        let mut sink = tokio::fs::File::create(&partial)
+        let mut sink = tokio::fs::File::create(fetched_to)
             .await
             .on_disk("cannot write the file")?;
+        let mut at = Instant::now();
         loop {
             // Between files is too late to stop when the file is a four-gigabyte
             // video. What has arrived of it goes when `Partial` does.
@@ -1724,6 +1842,7 @@ async fn copy(
             let bytes = within("cannot read the file", handle.read_n(CHUNK))
                 .await
                 .map_err(Failed::File)?;
+            at = Timing::add(&timing.read, at);
 
             if bytes.is_empty() {
                 break;
@@ -1732,17 +1851,24 @@ async fn copy(
             sink.write_all(&bytes)
                 .await
                 .on_disk("cannot write the file")?;
+            at = Timing::add(&timing.write, at);
             streamed.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-            room_held.wrote(bytes.len() as u64);
+            // Staged bytes are not in the folder yet; they count once copied.
+            if staged.is_none() {
+                room_held.wrote(bytes.len() as u64);
+            }
         }
 
         // write_all only fills tokio's buffer: the last chunk's error arrives
         // here or nowhere, and on a full disk that chunk is the short one.
         sink.flush().await.on_disk("cannot write the file")?;
 
-        // rollport-library.db says the photo is here once it is recorded, and that record
-        // is synced. The photo has to be on the disk before the record is.
-        sink.sync_data().await.on_disk("cannot write the file")?;
+        // No sync_data per file: on a network drive or a hard disk it cost
+        // more than the copy itself. The file is whole and closed before it is
+        // recorded, which an app crash cannot undo; only the machine losing
+        // power in the seconds after can, and then the photo is still on the
+        // phone.
+        Timing::add(&timing.write, at);
 
         // What the disk holds, not what the phone sent.
         Ok(sink
@@ -1753,9 +1879,11 @@ async fn copy(
     }
     .await;
 
+    at = Instant::now();
     let closed = within("cannot close the file", handle.close())
         .await
         .map_err(Failed::File);
+    at = Timing::add(&timing.close, at);
 
     // What went wrong with the file first, and only then what went wrong with
     // letting go of it.
@@ -1772,11 +1900,18 @@ async fn copy(
         )));
     }
 
-    if let Some(metadata_writer) = metadata_writer {
+    if let (Some(metadata_writer), Some(staged)) = (metadata_writer, &staged) {
         metadata_writer
-            .apply(&partial, &file.metadata, metadata_settings)
+            .apply(staged, &file.metadata, metadata_settings, timing.clone())
             .await
             .map_err(|reason| Failed::File(format!("cannot write metadata: {reason}")))?;
+
+        at = Instant::now();
+        let copied = tokio::fs::copy(staged, &partial)
+            .await
+            .on_disk("cannot write the file")?;
+        room_held.wrote(copied);
+        at = Timing::add(&timing.stage, at);
     }
 
     // Only a whole file gets the real name.
@@ -1797,6 +1932,7 @@ async fn copy(
         .write(true)
         .open(&target)
         .and_then(|done| done.set_modified(SystemTime::from(file.mtime.and_utc())));
+    Timing::add(&timing.publish, at);
 
     Ok(Copied::Fetched)
 }
