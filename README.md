@@ -26,11 +26,15 @@
   <a href="https://dont-do-it-now.github.io/rollport/help">Help</a>
 </p>
 
-<div align="center">
-  <picture style="display: inline-block; vertical-align: middle;">
-    <source media="(prefers-color-scheme: dark)" srcset="docs/rollport-dark.webp">
-    <img style="vertical-align: middle;" src="docs/rollport.webp" width="62%" alt="The Rollport window showing an import in progress and completed results">
-  </picture><img style="vertical-align: middle;" src="docs/rollport-options.webp" width="36%" alt="Rollport options showing media type and metadata controls">
+<div align="center" style="font-size: 0; line-height: 0;">
+  <span style="display: inline-block; width: 62%; vertical-align: top;">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/rollport-dark.webp">
+      <img src="docs/rollport.webp" width="100%" alt="The Rollport window showing an import in progress and completed results">
+    </picture>
+  </span><span style="display: inline-block; width: 36%; margin-top: 5.5%; vertical-align: top;">
+    <img src="docs/rollport-options.webp" width="100%" alt="Rollport options showing media type and metadata controls">
+  </span>
 </div>
 
 ## Features

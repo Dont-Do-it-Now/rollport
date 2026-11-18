@@ -26,11 +26,15 @@
   <a href="https://dont-do-it-now.github.io/rollport/help">도움말</a>
 </p>
 
-<div align="center">
-  <picture style="display: inline-block; vertical-align: middle;">
-    <source media="(prefers-color-scheme: dark)" srcset="docs/rollport-dark.webp">
-    <img style="vertical-align: middle;" src="docs/rollport.webp" width="62%" alt="가져오기 진행과 완료 결과를 보여 주는 Rollport 화면">
-  </picture><img style="vertical-align: middle;" src="docs/rollport-options.webp" width="36%" alt="미디어 유형과 메타데이터 옵션을 보여 주는 Rollport 화면">
+<div align="center" style="font-size: 0; line-height: 0;">
+  <span style="display: inline-block; width: 62%; vertical-align: top;">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/rollport-dark.webp">
+      <img src="docs/rollport.webp" width="100%" alt="가져오기 진행과 완료 결과를 보여 주는 Rollport 화면">
+    </picture>
+  </span><span style="display: inline-block; width: 36%; margin-top: 5.5%; vertical-align: top;">
+    <img src="docs/rollport-options.webp" width="100%" alt="미디어 유형과 메타데이터 옵션을 보여 주는 Rollport 화면">
+  </span>
 </div>
 
 ## 주요 기능
