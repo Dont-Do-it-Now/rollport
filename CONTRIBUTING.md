@@ -1,5 +1,7 @@
 # Contributing
 
+[English](CONTRIBUTING.md) | [한국어](CONTRIBUTING.ko.md)
+
 [Tauri 2](https://tauri.app) + SvelteKit. The iPhone side uses the
 [`idevice`](https://crates.io/crates/idevice) crate.
 

@@ -8,6 +8,12 @@
 <h1 align="center">Rollport</h1>
 
 <p align="center">
+  <a href="README.md">English</a>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  <a href="README.ko.md">한국어</a>
+</p>
+
+<p align="center">
   Import photos and videos from your iPhone over USB, choose what to copy and where it goes,<br>
   fill missing metadata, and never delete anything from the phone.
 </p>
@@ -157,7 +163,8 @@ pnpm tauri dev
 ```
 
 `pnpm tauri build` builds the installer. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the rest.
+[CONTRIBUTING.md](CONTRIBUTING.md) for the rest. See the
+[Korean contribution guide](CONTRIBUTING.ko.md) if you prefer Korean.
 
 On Windows, `deploy.bat` builds the release executable and launches it after a
 successful build.
@@ -165,7 +172,8 @@ successful build.
 ## Licence
 
 Rollport source code is available under the MIT License. The original
-copyright notice is retained in [LICENSE](LICENSE). ExifTool is bundled as a
+copyright notice is retained in [LICENSE](LICENSE). A Korean reference
+translation is available in [LICENSE.ko.md](LICENSE.ko.md). ExifTool is bundled as a
 separate utility under its own GPL or Perl Artistic License; Rollport's MIT
 license does not apply to it.
 
