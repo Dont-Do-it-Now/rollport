@@ -31,11 +31,11 @@ use tokio_stream::StreamExt;
 
 use crate::{
     Context, follow,
-    library::{Key, Library, key, room},
+    library::{Library, key, room},
     said,
     state::{
-        Batch, Device, Devices, End, Media, MediaClassification, MediaSupport, Need, Progress,
-        MediaMetadata, MetadataMode, MetadataSettings, Report, Settings, Trouble, check_name,
+        Batch, Device, Devices, End, Media, MediaClassification, MediaMetadata, MediaSupport,
+        MetadataMode, MetadataSettings, Need, Progress, Report, Settings, Trouble, check_name,
         local, render,
     },
     with,
@@ -46,8 +46,8 @@ use crate::{
 /// an SD card reader). The CLI took fewer and skipped the rest without a
 /// word. Not .aae: an edit's recipe, which only Photos can read.
 pub const MEDIA: [&str; 21] = [
-    "heic", "heif", "jpg", "jpeg", "png", "bmp", "dng", "mov", "mp4", "m4v", "gif", "tif", "tiff", "webp",
-    "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2",
+    "heic", "heif", "jpg", "jpeg", "png", "bmp", "dng", "mov", "mp4", "m4v", "gif", "tif", "tiff",
+    "webp", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2",
 ];
 
 /// How long one exchange with the phone may take before we call it dead, and
@@ -264,11 +264,7 @@ async fn photo_database(afc: &mut AfcClient, udid: &str) -> Option<PhotoDatabase
         }
     }
 
-    for name in [
-        "Photos.sqlite",
-        "Photos.sqlite-wal",
-        "Photos.sqlite-shm",
-    ] {
+    for name in ["Photos.sqlite", "Photos.sqlite-wal", "Photos.sqlite-shm"] {
         let remote = format!("/PhotoData/{name}");
         if !sources.iter().any(|source| source.remote == remote) {
             let local = photo_cache_dir(udid).join(name);
@@ -301,9 +297,18 @@ async fn photo_database(afc: &mut AfcClient, udid: &str) -> Option<PhotoDatabase
 fn photo_cache_dir(udid: &str) -> PathBuf {
     let safe = udid
         .chars()
-        .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
-    std::env::temp_dir().join("rollport").join("photos").join(safe)
+    std::env::temp_dir()
+        .join("rollport")
+        .join("photos")
+        .join(safe)
 }
 
 async fn cache_photo_files(
@@ -319,7 +324,11 @@ async fn cache_photo_files(
 
     for source in sources {
         let stamp = sidecar(&source.local, "stamp");
-        let expected = format!("{}:{}", source.size, source.modified.and_utc().timestamp_micros());
+        let expected = format!(
+            "{}:{}",
+            source.size,
+            source.modified.and_utc().timestamp_micros()
+        );
         let cached = !force
             && fs::read_to_string(&stamp).is_ok_and(|actual| actual == expected)
             && source.local.is_file();
@@ -375,7 +384,10 @@ async fn cache_photo_files(
 }
 
 fn sidecar(path: &Path, suffix: &str) -> PathBuf {
-    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("cache");
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cache");
     path.with_file_name(format!("{name}.{suffix}"))
 }
 
@@ -518,10 +530,7 @@ fn parse_photo_database(path: &Path) -> Result<PhotoDatabase, String> {
             } else {
                 directory
             };
-            let path = format!(
-                "/{}/{filename}",
-                directory.trim_end_matches('/')
-            );
+            let path = format!("/{}/{filename}", directory.trim_end_matches('/'));
             let pick_type = row.get::<_, Option<i64>>(9)?.unwrap_or_default();
             let visibility = row.get::<_, Option<i64>>(10)?;
             Ok(PhotoRow {
@@ -533,12 +542,9 @@ fn parse_photo_database(path: &Path) -> Result<PhotoDatabase, String> {
                 adjusted: row.get::<_, Option<i64>>(6)?.unwrap_or_default(),
                 burst: row.get(7)?,
                 burst_kind: row.get::<_, Option<i64>>(8)?.unwrap_or_default(),
-                burst_pick: visibility == Some(0)
-                    || (visibility.is_none() && pick_type & 16 != 0),
+                burst_pick: visibility == Some(0) || (visibility.is_none() && pick_type & 16 != 0),
                 trashed: row.get::<_, Option<i64>>(11)?.unwrap_or_default() == 1,
-                created: row
-                    .get::<_, Option<f64>>(12)?
-                    .and_then(apple_date),
+                created: row.get::<_, Option<f64>>(12)?.and_then(apple_date),
                 metadata: MediaMetadata {
                     latitude: coordinate(row.get(13)?, -90.0, 90.0),
                     longitude: coordinate(row.get(14)?, -180.0, 180.0),
@@ -637,7 +643,8 @@ async fn add_portrait_renders(
     let mut originals = Vec::new();
 
     while let Some(directory) = pending.pop() {
-        let names = match within("cannot read PhotoData/Mutations", afc.list_dir(&directory)).await {
+        let names = match within("cannot read PhotoData/Mutations", afc.list_dir(&directory)).await
+        {
             Ok(names) => names,
             Err(_) if directory == ROOT => return Ok(()),
             Err(reason) => return Err(reason),
@@ -742,9 +749,18 @@ pub fn mark_live_videos(media: &mut [Media]) {
 fn fill_metadata(target: &mut MediaMetadata, source: &MediaMetadata) {
     target.latitude = target.latitude.or(source.latitude);
     target.longitude = target.longitude.or(source.longitude);
-    target.camera_make = target.camera_make.clone().or_else(|| source.camera_make.clone());
-    target.camera_model = target.camera_model.clone().or_else(|| source.camera_model.clone());
-    target.lens_model = target.lens_model.clone().or_else(|| source.lens_model.clone());
+    target.camera_make = target
+        .camera_make
+        .clone()
+        .or_else(|| source.camera_make.clone());
+    target.camera_model = target
+        .camera_model
+        .clone()
+        .or_else(|| source.camera_model.clone());
+    target.lens_model = target
+        .lens_model
+        .clone()
+        .or_else(|| source.lens_model.clone());
     target.iso = target.iso.or(source.iso);
     target.focal_length = target.focal_length.or(source.focal_length);
     target.aperture = target.aperture.or(source.aperture);
@@ -826,10 +842,17 @@ const WORKERS: usize = 4;
 /// stall on one that will never arrive.
 const ATTEMPTS: u32 = 3;
 const BACKOFF: Duration = Duration::from_millis(250);
+const METADATA_PROGRESS_BATCH: usize = 100;
+
+/// ExifTool processes run side by side. Two, not four: each rewrites the
+/// whole file in place, and on a network drive more than that brings back
+/// disk I/O errors.
+const EXIFTOOLS: usize = 2;
 
 #[derive(Clone)]
 struct MetadataWriter {
-    tool: Arc<Mutex<ExifTool>>,
+    tools: Arc<Vec<Mutex<ExifTool>>>,
+    next: Arc<AtomicUsize>,
 }
 
 struct ExifTool {
@@ -851,25 +874,53 @@ impl MetadataWriter {
         settings: MetadataSettings,
         media: &[Media],
     ) -> Result<Option<Self>, String> {
-        if !media
-            .iter()
-            .any(|file| metadata_needed(file, settings))
-        {
+        if !media.iter().any(|file| metadata_needed(file, settings)) {
             return Ok(None);
         }
 
         let tool = exiftool_path(app).ok_or_else(|| {
             "metadata processing is enabled, but the bundled ExifTool is missing".to_string()
         })?;
+        let tools = (0..EXIFTOOLS)
+            .map(|_| ExifTool::start(&tool).map(Mutex::new))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Some(Self {
+            tools: Arc::new(tools),
+            next: Arc::new(AtomicUsize::new(0)),
+        }))
+    }
+
+    async fn apply(
+        &self,
+        path: &Path,
+        metadata: &MediaMetadata,
+        settings: MetadataSettings,
+    ) -> Result<(), String> {
+        let path = path.to_path_buf();
+        let metadata = metadata.clone();
+        let (tools, next) = (self.tools.clone(), self.next.clone());
+        tokio::task::spawn_blocking(move || {
+            // A free process first; if all are busy, wait on the next in turn.
+            let mut tool = tools
+                .iter()
+                .find_map(|tool| tool.try_lock().ok())
+                .unwrap_or_else(|| {
+                    tools[next.fetch_add(1, Ordering::Relaxed) % tools.len()]
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                });
+            tool.apply(&path, &metadata, settings)
+        })
+        .await
+        .doing("ExifTool stopped unexpectedly")?
+    }
+}
+
+impl ExifTool {
+    fn start(tool: &Path) -> Result<Self, String> {
         let mut child = Command::new(tool)
-            .args([
-                "-stay_open",
-                "True",
-                "-@",
-                "-",
-                "-charset",
-                "filename=utf8",
-            ])
+            .args(["-stay_open", "True", "-@", "-", "-charset", "filename=utf8"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -892,34 +943,13 @@ impl MetadataWriter {
             }
         };
 
-        Ok(Some(Self {
-            tool: Arc::new(Mutex::new(ExifTool {
-                _child: child,
-                input,
-                output: BufReader::new(output),
-            })),
-        }))
-    }
-
-    async fn apply(
-        &self,
-        path: &Path,
-        metadata: &MediaMetadata,
-        settings: MetadataSettings,
-    ) -> Result<(), String> {
-        let path = path.to_path_buf();
-        let metadata = metadata.clone();
-        let tool = self.tool.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut tool = tool.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            tool.apply(&path, &metadata, settings)
+        Ok(Self {
+            _child: child,
+            input,
+            output: BufReader::new(output),
         })
-        .await
-        .doing("ExifTool stopped unexpectedly")?
     }
-}
 
-impl ExifTool {
     fn apply(
         &mut self,
         path: &Path,
@@ -970,14 +1000,10 @@ impl ExifTool {
 
         args.push(path.to_string_lossy().into_owned());
         for argument in args {
-            writeln!(self.input, "{argument}")
-                .doing("cannot send metadata to ExifTool")?;
+            writeln!(self.input, "{argument}").doing("cannot send metadata to ExifTool")?;
         }
-        writeln!(self.input, "-execute")
-            .doing("cannot send metadata command to ExifTool")?;
-        self.input
-            .flush()
-            .doing("cannot flush metadata command")?;
+        writeln!(self.input, "-execute").doing("cannot send metadata command to ExifTool")?;
+        self.input.flush().doing("cannot flush metadata command")?;
 
         let mut output = String::new();
         let mut line = String::new();
@@ -1027,8 +1053,8 @@ fn exiftool_path(app: &AppHandle) -> Option<PathBuf> {
 
 fn metadata_needed(file: &Media, settings: MetadataSettings) -> bool {
     (settings.location == MetadataMode::FillMissing
-            && file.metadata.latitude.is_some()
-            && file.metadata.longitude.is_some())
+        && file.metadata.latitude.is_some()
+        && file.metadata.longitude.is_some())
         || (settings.camera == MetadataMode::FillMissing
             && (file.metadata.camera_make.is_some()
                 || file.metadata.camera_model.is_some()
@@ -1076,8 +1102,7 @@ pub async fn copy_all(
 
     // Opening rollport-library.db is blocking work, kept off the async workers.
     let metadata_settings = settings.metadata;
-    let metadata_keys: Vec<Key> = metadata.iter().map(key).collect();
-    let metadata_count = metadata_keys.len();
+    let metadata_count = metadata.len();
     let opened = tokio::task::spawn_blocking({
         let destination = destination.to_path_buf();
 
@@ -1110,8 +1135,7 @@ pub async fn copy_all(
     let mut all_media = metadata;
     all_media.extend(media);
     let fetch = Arc::new(all_media);
-    let metadata = MetadataWriter::new(app, metadata_settings, &fetch)?
-        .map(Arc::new);
+    let metadata = MetadataWriter::new(app, metadata_settings, &fetch)?.map(Arc::new);
 
     let total = fetch.len();
     let total_bytes = fetch.iter().map(|file| file.size).sum::<u64>();
@@ -1144,6 +1168,7 @@ pub async fn copy_all(
     // one mid-read drops an AFC file unclosed, which idevice asserts against.
     let mut fatal = None;
     let mut full = false;
+    let mut metadata_done = Vec::new();
 
     let cursor = Arc::new(AtomicUsize::new(0));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1237,6 +1262,8 @@ pub async fn copy_all(
 
     while let Some((index, outcome)) = rx.recv().await {
         let file = &fetch[index];
+        let metadata_candidate =
+            index < metadata_count && matches!(&outcome, Ok(Copied::Fetched | Copied::Already));
 
         done += 1;
         bytes += file.size;
@@ -1288,6 +1315,16 @@ pub async fn copy_all(
         if let Err(reason) = recorded {
             cancel.store(true, Ordering::Relaxed);
             fatal.get_or_insert(reason);
+        } else if metadata_candidate {
+            metadata_done.push(key(file));
+            if metadata_done.len() >= METADATA_PROGRESS_BATCH {
+                if let Err(reason) = library.mark_metadata_migrated(&metadata_done) {
+                    cancel.store(true, Ordering::Relaxed);
+                    fatal.get_or_insert(reason);
+                } else {
+                    metadata_done.clear();
+                }
+            }
         }
 
         // Often enough to look alive, rarely enough not to flood the window.
@@ -1346,16 +1383,14 @@ pub async fn copy_all(
         }
     }
 
+    if !metadata_done.is_empty() {
+        if let Err(reason) = library.mark_metadata_migrated(&metadata_done) {
+            fatal.get_or_insert(reason);
+        }
+    }
+
     let end = ending(fatal, full, cancel.load(Ordering::Relaxed));
     let trouble = lost.trouble();
-    if matches!(&end, End::Done)
-        && trouble.is_none()
-        && (matches!(metadata_settings.location, MetadataMode::FillMissing)
-            || matches!(metadata_settings.camera, MetadataMode::FillMissing)
-            || matches!(metadata_settings.title, MetadataMode::FillMissing))
-    {
-        library.mark_metadata_migrated(&metadata_keys)?;
-    }
 
     Ok(Report {
         imported,
@@ -1606,18 +1641,16 @@ async fn copy(
     // so the capture time has to match too, and we set that on every copy.
     // The legacy CLI never made this claim at all; it suffixed and downloaded
     // again. This is that, minus re-downloading what is demonstrably here.
-    if let Some(existing) = existing_target(
+    if existing_target(
         &target,
         file.size,
         file.mtime.and_utc().timestamp(),
-        metadata_existing,
-    ) {
-        if let Some(metadata_writer) = metadata_writer {
-            metadata_writer
-                .apply(&existing, &file.metadata, metadata_settings)
-                .await
-                .map_err(|reason| Failed::File(format!("cannot write metadata: {reason}")))?;
-        }
+        metadata_existing || metadata_needed(file, metadata_settings),
+    )
+    .is_some()
+    {
+        // Already in the folder: skipped as it is. Metadata is written only
+        // on a fresh copy, so a resumed run does not re-touch every file.
         return Ok(Copied::Already);
     }
 
@@ -1811,7 +1844,10 @@ fn existing_target(
                     !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
                 });
             (candidate_stem == stem || suffixed)
-                && candidate.extension().and_then(|extension| extension.to_str()) == extension
+                && candidate
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    == extension
                 && matches(candidate).is_some()
         })
 }

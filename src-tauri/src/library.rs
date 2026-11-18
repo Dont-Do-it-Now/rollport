@@ -121,7 +121,10 @@ fn keys(folder: &Path) -> Result<(HashSet<Key>, Option<i64>), String> {
             .and_then(|extension| extension.to_str())
             .map(str::to_lowercase);
         parents.insert(parent.clone());
-        expected.entry(parent).or_default().insert((stem, extension));
+        expected
+            .entry(parent)
+            .or_default()
+            .insert((stem, extension));
     }
     let physical = local_files(&parents, &expected)?;
     let keys = targets
@@ -239,10 +242,7 @@ fn matches_stem(candidate: &str, expected: &str) -> bool {
             .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()))
 }
 
-fn landed(
-    physical: &HashMap<PathBuf, Vec<LocalFile>>,
-    target: &Path,
-) -> bool {
+fn landed(physical: &HashMap<PathBuf, Vec<LocalFile>>, target: &Path) -> bool {
     let Some(parent) = target.parent() else {
         return false;
     };
@@ -261,10 +261,9 @@ fn landed(
         .and_then(|extension| extension.to_str())
         .map(str::to_lowercase);
 
-    files.iter().any(|file| {
-        matches_stem(&file.stem, &stem)
-            && file.extension == extension
-    })
+    files
+        .iter()
+        .any(|file| matches_stem(&file.stem, &stem) && file.extension == extension)
 }
 
 /// The files of this camera roll the folder takes and has never taken.
@@ -374,7 +373,10 @@ impl Library {
         // already has files on disk.
         db.busy_timeout(std::time::Duration::from_secs(10))
             .doing("cannot prepare rollport-library.db")?;
-        let _ = db.pragma_update(None, "journal_mode", "WAL");
+        // SQLite WAL does not work reliably over network file systems. Use the
+        // rollback journal there; local folders keep WAL for better concurrency.
+        let journal_mode = if on_network(folder) { "DELETE" } else { "WAL" };
+        let _ = db.pragma_update(None, "journal_mode", journal_mode);
 
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
