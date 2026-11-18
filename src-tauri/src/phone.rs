@@ -205,7 +205,7 @@ async fn walk_media_root(
             }
             media.push(file);
 
-            if media.len() % 100 == 0
+            if media.len().is_multiple_of(100)
                 && !with(app, |state| {
                     state.roll_seen(ticket, media.len(), latest.clone())
                 })
@@ -278,9 +278,7 @@ async fn photo_database(afc: &mut AfcClient, udid: &str) -> Option<PhotoDatabase
             return None;
         }
 
-        let Some(path) = sources.first().map(|source| source.local.clone()) else {
-            return None;
-        };
+        let path = sources.first().map(|source| source.local.clone())?;
         let database = tokio::task::spawn_blocking(move || parse_photo_database(&path))
             .await
             .ok()
@@ -959,13 +957,13 @@ impl ExifTool {
         let mut args = vec!["-overwrite_original".to_string(), "-P".to_string()];
         let mut writes = false;
 
-        if settings.location == MetadataMode::FillMissing {
-            if let (Some(latitude), Some(longitude)) = (metadata.latitude, metadata.longitude) {
-                args.push("-wm=c".into());
-                args.push(format!("-GPSLatitude={latitude}"));
-                args.push(format!("-GPSLongitude={longitude}"));
-                writes = true;
-            }
+        if settings.location == MetadataMode::FillMissing
+            && let (Some(latitude), Some(longitude)) = (metadata.latitude, metadata.longitude)
+        {
+            args.push("-wm=c".into());
+            args.push(format!("-GPSLatitude={latitude}"));
+            args.push(format!("-GPSLongitude={longitude}"));
+            writes = true;
         }
 
         if settings.camera == MetadataMode::FillMissing {
@@ -1262,8 +1260,13 @@ pub async fn copy_all(
 
     while let Some((index, outcome)) = rx.recv().await {
         let file = &fetch[index];
-        let metadata_candidate =
-            index < metadata_count && matches!(&outcome, Ok(Copied::Fetched | Copied::Already));
+        // A fresh copy had its metadata written too; without marking it, the
+        // next run offers every file it just imported again.
+        let metadata_candidate = match &outcome {
+            Ok(Copied::Fetched) => index < metadata_count || metadata.is_some(),
+            Ok(Copied::Already) => index < metadata_count,
+            _ => false,
+        };
 
         done += 1;
         bytes += file.size;
@@ -1383,10 +1386,10 @@ pub async fn copy_all(
         }
     }
 
-    if !metadata_done.is_empty() {
-        if let Err(reason) = library.mark_metadata_migrated(&metadata_done) {
-            fatal.get_or_insert(reason);
-        }
+    if !metadata_done.is_empty()
+        && let Err(reason) = library.mark_metadata_migrated(&metadata_done)
+    {
+        fatal.get_or_insert(reason);
     }
 
     let end = ending(fatal, full, cancel.load(Ordering::Relaxed));
@@ -1604,6 +1607,7 @@ impl<T> Local<T> for Result<T, std::io::Error> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn copy(
     afc: &mut AfcClient,
     file: &Media,

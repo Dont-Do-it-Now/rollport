@@ -800,17 +800,12 @@ pub struct Settings {
     pub metadata: MetadataSettings,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum MetadataMode {
     Preserve,
+    #[default]
     FillMissing,
-}
-
-impl Default for MetadataMode {
-    fn default() -> Self {
-        Self::FillMissing
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
@@ -905,6 +900,7 @@ pub enum FolderView {
 
 /// The chosen phone's camera roll, as the window is shown it.
 #[derive(Serialize, Clone)]
+#[allow(clippy::large_enum_variant)]
 #[serde(
     tag = "roll",
     rename_all = "camelCase",
@@ -1988,6 +1984,7 @@ mod tests {
     fn finished() -> Report {
         Report {
             imported: 12,
+            updated: 0,
             bytes: 1,
             seconds: 1,
             end: End::Done,

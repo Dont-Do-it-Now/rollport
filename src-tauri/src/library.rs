@@ -67,7 +67,7 @@ pub fn read_folder(path: &Path) -> Result<FolderFacts, String> {
         last,
         settings: Settings {
             layout: library.setting("layout")?.unwrap_or_else(default_layout),
-            takes: Takes::read(&library.setting("takes")?.unwrap_or_default()),
+            takes: Takes::read(library.setting("takes")?.unwrap_or_default()),
             metadata: serde_json::from_str(&library.setting("metadata")?.unwrap_or_default())
                 .unwrap_or_default(),
         },
@@ -155,10 +155,7 @@ fn keys(folder: &Path) -> Result<(HashSet<Key>, Option<i64>), String> {
 /// saved layout is the stable check here.
 fn target_for(folder: &Path, layout: &str, key: &Key) -> Option<PathBuf> {
     let (source, _, mtime) = key;
-    let Some(when) = chrono::DateTime::from_timestamp(*mtime, 0).map(|date| date.naive_utc())
-    else {
-        return None;
-    };
+    let when = chrono::DateTime::from_timestamp(*mtime, 0).map(|date| date.naive_utc())?;
     let name = source.rsplit('/').next().unwrap_or(source);
     Some(folder.join(render(layout, name, local(when))))
 }
@@ -511,6 +508,7 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::MediaClassification;
 
     fn folder(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("rollport-{name}-{}", std::process::id()));
